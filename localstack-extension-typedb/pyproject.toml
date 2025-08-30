@@ -21,7 +21,11 @@ Homepage = "https://github.com/whummer/localstack-utils"
 
 [project.optional-dependencies]
 dev = [
+    "boto3",
+    "jsonpatch",
     "localstack",
+    "pytest",
+    "rolo",
     "ruff"
 ]
 

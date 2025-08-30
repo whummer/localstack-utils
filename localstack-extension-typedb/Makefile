@@ -29,6 +29,9 @@ dist: venv      ## Create distribution
 publish: clean-dist venv dist   ## Publish extension to pypi
 	$(VENV_RUN); pip install --upgrade twine; twine upload dist/*
 
+entrypoints: venv   # Generate plugin entrypoints for Python package
+	$(VENV_RUN); python -m plux entrypoints
+
 format:		    ## Run ruff to format the whole codebase
 	($(VENV_RUN); python -m ruff format .; python -m ruff check --output-format=full --fix .)
 

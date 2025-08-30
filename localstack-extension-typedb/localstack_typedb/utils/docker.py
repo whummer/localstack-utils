@@ -1,13 +1,21 @@
 import re
 import logging
+from functools import cache
 
+import requests
+from localstack import config
+from rolo.proxy import Proxy
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
 from rolo.router import RuleAdapter, WithHost
 from localstack.http import Request, route
-
+from localstack.utils.container_utils.container_client import PortMappings
+from localstack.utils.net import get_addressable_container_host
+from localstack.utils.sync import retry
 
 LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
+logging.basicConfig()
 
 
 class ProxiedDockerContainerExtension(Extension):
@@ -17,6 +25,8 @@ class ProxiedDockerContainerExtension(Extension):
     """Docker image name"""
     container_name: str | None
     """Name of the Docker container spun up by the extension"""
+    container_ports: list[int]
+    """List of network ports of the Docker container spun up by the extension"""
     host: str | None
     """
     Optional host on which to expose the container endpoints.
@@ -25,33 +35,38 @@ class ProxiedDockerContainerExtension(Extension):
     path: str | None
     """Optional path on which to expose the container endpoints."""
 
+    tcp_proxy_ports: list | None
+    tcp_proxies: list[int]
+
     def __init__(
         self,
         image_name: str,
+        container_ports: list[int],
+        tcp_proxy_ports: list[int] | None = None,
         host: str | None = None,
         path: str | None = None,
         container_name: str | None = None,
     ):
         self.image_name = image_name
+        self.container_ports = container_ports
         self.host = host
         self.path = path
         self.container_name = container_name
+        self.tcp_proxy_ports = tcp_proxy_ports
+        self.tcp_proxies = []
 
     def update_gateway_routes(self, router: http.Router[http.RouteHandler]):
-        resource = RuleAdapter(ProxyResource())
+        resource = RuleAdapter(ProxyResource(self))
         if self.host:
             resource = WithHost(self.host, [resource])
         if self.path:
             raise NotImplementedError(
                 "Path-based routing not yet implemented for this extension"
             )
-        resource.add_rule(resource)
         router.add(resource)
-        # TODO ...
 
     def on_platform_shutdown(self):
-        container_name = self._get_container_name()
-        DOCKER_CLIENT.remove_container(container_name, force=True)
+        self._remove_container()
 
     def _get_container_name(self) -> str:
         if self.container_name:
@@ -60,9 +75,81 @@ class ProxiedDockerContainerExtension(Extension):
         name = re.sub(r"\W", "-", name)
         return name
 
+    @cache
+    def start_container(self) -> None:
+        container_name = self._get_container_name()
+        LOG.debug("Starting extension container %s", container_name)
+
+        ports = PortMappings()
+        for port in self.container_ports:
+            ports.add(port)
+        DOCKER_CLIENT.run_container(
+            self.image_name,
+            detach=True,
+            remove=True,
+            name=container_name,
+            ports=ports,
+        )
+
+        main_port = self.container_ports[0]
+        container_host = get_addressable_container_host()
+
+        def _ping_api():
+            response = requests.get(f"http://{container_host}:{main_port}/")
+            assert response.ok
+
+        try:
+            retry(_ping_api, retries=40, sleep=1)
+        except Exception as e:
+            LOG.info("Failed to connect to container %s: %s", container_name, e)
+            self._remove_container()
+            raise
+
+        # TODO: enable support for TCP port proxying!
+        # for port in self.container_ports:
+        #     proxy = TCPProxy(
+        #         target_address="localhost",
+        #         target_port=port,
+        #         port=...,
+        #         host="...",
+        #     )
+
+        LOG.debug("Successfully started extension container %s", container_name)
+
+    def _remove_container(self):
+        container_name = self._get_container_name()
+        LOG.debug("Stopping extension container %s", container_name)
+        DOCKER_CLIENT.remove_container(
+            container_name, force=True, check_existence=False
+        )
+
 
 class ProxyResource:
+    extension: ProxiedDockerContainerExtension
+
+    def __init__(self, extension: ProxiedDockerContainerExtension):
+        self.extension = extension
+
     @route("/<path:path>")
     def index(self, request: Request, path: str, *args, **kwargs):
-        # TODO
-        return {}
+        return self._proxy_request(request, forward_path=f"/{path}")
+
+    def _proxy_request(self, request: Request, forward_path: str, *args, **kwargs):
+        self.extension.start_container()
+
+        port = self.extension.container_ports[0]
+        container_host = get_addressable_container_host()
+        base_url = f"http://{container_host}:{port}"
+        proxy = Proxy(forward_base_url=base_url)
+
+        # update content length (may have changed due to content compression)
+        if request.method not in ("GET", "OPTIONS"):
+            request.headers["Content-Length"] = str(len(request.data))
+
+        # make sure we're forwarding the correct Host header
+        request.headers["Host"] = f"localhost:{port}"
+
+        # forward the request to the target
+        result = proxy.forward(request, forward_path=forward_path)
+
+        return result
