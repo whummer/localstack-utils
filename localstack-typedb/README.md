@@ -1,7 +1,22 @@
 TypeDB on LocalStack
 ===============================
 
-Developing TypeDB-based applications locally
+This repo contains a [LocalStack Extension](https://github.com/localstack/localstack-extensions) that facilitates developing TypeDB-based applications locally.
+
+## Prerequisites
+
+* Docker
+* LocalStack Pro (free trial available)
+* `localstack` CLI
+* `make`
+
+## Install from GitHub repository
+
+This extension can be installed directly from this Github repo via:
+
+```bash
+localstack extensions install "git+https://github.com/whummer/localstack-utils.git#egg=localstack-typedb&subdirectory=localstack-typedb"
+```
 
 ## Install local development version
 
@@ -23,12 +38,4 @@ You can then start LocalStack with `EXTENSION_DEV_MODE=1` to load all enabled ex
 
 ```bash
 EXTENSION_DEV_MODE=1 localstack start
-```
-
-## Install from GitHub repository
-
-This extension can be installed directly from this Github repo via:
-
-```bash
-localstack extensions install "git+https://github.com/whummer/localstack-utils/#egg=localstack-typedb-extension"
 ```

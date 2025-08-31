@@ -35,6 +35,7 @@ class ProxiedDockerContainerExtension(Extension):
     path: str | None
     """Optional path on which to expose the container endpoints."""
 
+    # TODO: currently not yet used ...
     tcp_proxy_ports: list | None
     tcp_proxies: list[int]
 
@@ -125,6 +126,11 @@ class ProxiedDockerContainerExtension(Extension):
 
 
 class ProxyResource:
+    """
+    Simple proxy resource that forwards incoming requests from the
+    LocalStack Gateway to the target Docker container.
+    """
+
     extension: ProxiedDockerContainerExtension
 
     def __init__(self, extension: ProxiedDockerContainerExtension):

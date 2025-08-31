@@ -33,9 +33,12 @@ entrypoints: venv   # Generate plugin entrypoints for Python package
 	$(VENV_RUN); python -m plux entrypoints
 
 format:		    ## Run ruff to format the whole codebase
-	($(VENV_RUN); python -m ruff format .; python -m ruff check --output-format=full --fix .)
+	$(VENV_RUN); python -m ruff format .; python -m ruff check --output-format=full --fix .
+
+test:		    ## Run integration tests (requires LocalStack running with the Extension installed)
+	$(VENV_RUN); pytest tests
 
 clean-dist: clean
 	rm -rf dist/
 
-.PHONY: clean clean-dist dist install publish usage venv
+.PHONY: clean clean-dist dist install publish usage venv format test
