@@ -17,6 +17,6 @@ class TypeDbExtension(ProxiedDockerContainerExtension):
         )
 
     def request_to_port_router(self, request: Request):
-        print("!REQ", request, request.headers, request.data)
-        print("!request", request, request.__dict__)
+        print("!REQ target port", request, request.data)
+        # print("!request", request, request.__dict__)
         return 1729
