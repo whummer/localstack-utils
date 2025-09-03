@@ -39,11 +39,8 @@ def test_connect_to_db_via_http_api():
 
 
 def test_connect_to_db_via_grpc_endpoint():
-    # test taken from https://typedb.com/docs/drivers/2.x/python/
-
     db_name = "access-management-db"
     server_host = "typedb.localhost.localstack.cloud:4566"
-    # server_host = "localhost:1729"
 
     driver_cfg = TypeDB.driver(
         server_host,
@@ -54,20 +51,19 @@ def test_connect_to_db_via_grpc_endpoint():
         if driver.databases.contains(db_name):
             driver.databases.get(db_name).delete()
         driver.databases.create(db_name)
-        print("!create driver transaction", driver, type(driver))
+
         with driver.transaction(db_name, TransactionType.SCHEMA) as tx:
-            pass
-        #     tx.query("define person sub entity;").resolve()
-        #     tx.query(
-        #         "define name sub attribute, value string; person owns name;"
-        #     ).resolve()
-        #     tx.commit()
-        #
-        # with driver.transaction(db_name, TransactionType.WRITE) as tx:
-        #     tx.query("insert $p isa person, has name 'Alice';").resolve()
-        #     tx.query("insert $p isa person, has name 'Bob';").resolve()
-        #     tx.commit()
-        # with driver.transaction(db_name, TransactionType.READ) as tx:
-        #     results = tx.query("match $p isa person; fetch $p: name;").resolve()
-        #     for json in results:
-        #         print(json)
+            tx.query("define entity person;").resolve()
+            tx.query("define attribute name, value string; person owns name;").resolve()
+            tx.commit()
+
+        with driver.transaction(db_name, TransactionType.WRITE) as tx:
+            tx.query("insert $p isa person, has name 'Alice';").resolve()
+            tx.query("insert $p isa person, has name 'Bob';").resolve()
+            tx.commit()
+        with driver.transaction(db_name, TransactionType.READ) as tx:
+            results = tx.query(
+                'match $p isa person; fetch {"name": $p.name};'
+            ).resolve()
+            for json in results:
+                print(json)

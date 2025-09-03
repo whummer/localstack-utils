@@ -1,9 +1,11 @@
 import queue
 import re
 import logging
+import socket
 from functools import cache
 from typing import Callable
 
+from localstack.runtime import events
 from twisted.internet import reactor
 from twisted.web._http2 import H2Stream
 
@@ -13,18 +15,12 @@ from localstack import config
 from localstack.services.edge import ROUTER
 from localstack.utils.patch import patch
 from localstack.utils.strings import to_str, to_bytes
-from rolo import Response
-from rolo.proxy import Proxy
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
 from localstack.http import Request
 from localstack.utils.container_utils.container_client import PortMappings
 from localstack.utils.net import get_addressable_container_host
 from localstack.utils.sync import retry
-from rolo.serving.twisted import (
-    TwistedRequestAdapter,
-    to_flat_header_list,
-)
 from twisted.web._http2 import H2Connection
 from twisted.web.server import NOT_DONE_YET
 
@@ -51,9 +47,7 @@ class ProxiedDockerContainerExtension(Extension):
     """Optional path on which to expose the container endpoints."""
 
     request_to_port_router: Callable[[Request], int] | None
-    # TODO: currently not yet used ...
-    tcp_proxy_ports: list | None
-    tcp_proxies: list[int]
+    """Callable that returns the target port for a given request, for routing purposes"""
 
     def __init__(
         self,
@@ -63,26 +57,15 @@ class ProxiedDockerContainerExtension(Extension):
         path: str | None = None,
         container_name: str | None = None,
         request_to_port_router: Callable[[Request], int] | None = None,
-        # tcp_proxy_ports: list[int] | None = None,
     ):
         self.image_name = image_name
         self.container_ports = container_ports
         self.host = host
         self.path = path
         self.container_name = container_name
-        # self.tcp_proxy_ports = tcp_proxy_ports
-        # self.tcp_proxies = []
         self.request_to_port_router = request_to_port_router
 
     def update_gateway_routes(self, router: http.Router[http.RouteHandler]):
-        # resource = RuleAdapter(ProxyResource(self))
-        # if self.host:
-        #     resource = WithHost(self.host, [resource])
-        # if self.path:
-        #     raise NotImplementedError(
-        #         "Path-based routing not yet implemented for this extension"
-        #     )
-        # router.add(resource)
         if self.path:
             raise NotImplementedError(
                 "Path-based routing not yet implemented for this extension"
@@ -94,6 +77,7 @@ class ProxiedDockerContainerExtension(Extension):
             defaults={},
             strict_slashes=False,
         )
+        _apply_patches(self)
 
     def on_platform_shutdown(self):
         self._remove_container()
@@ -155,89 +139,64 @@ class ProxiedDockerContainerExtension(Extension):
         )
 
 
-# class Http2EnabledRequestsClient(SimpleRequestsClient):
-#     def __init__(self, *args, **kwargs):
-#         import httpx
-#
-#         super().__init__(*args, **kwargs)
-#         # proxies = httpx._utils.get_environment_proxies()
-#         # print("!proxies", proxies)
-#         client = httpx.Client(http2=True)
-#         self.session.mount("http://", client)
+class TcpForwarder:
+    def __init__(self, port: int, host: str = "localhost"):
+        self.port = port
+        self.host = host
+        self._buffer_size = 1024
+        self._socket = None
+        self.connect()
+
+    def connect(self):
+        if not self._socket:
+            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._socket.connect((self.host, self.port))
+
+    def receive_loop(self, callback):
+        self.connect()
+        while True:
+            data = self._socket.recv(self._buffer_size)
+            callback(data)
+            if not data:
+                break
+
+    def send(self, data):
+        self._socket.sendall(data)
 
 
-# @patch(WebsocketResourceDecorator.render)
-def render(fn, self, request):
-    from rolo import Response
-    from localstack.utils.strings import to_str
-    from werkzeug.datastructures.headers import Headers
+def _apply_patches(extension):
+    @patch(H2Connection.connectionMade)
+    def _connectionMade(fn, self, *args, **kwargs):
+        extension.start_container()
 
-    def _processH2Request(request: Request):
-        def handler(req, *args):
-            print("!!_processH2Request 1234", type(req), req.__dict__)
-            response = Response(status=101)
-            gateway = self.original._application.gateway
-            req.headers = Headers(
-                {
-                    to_str(k): to_str(v)
-                    for k, v in to_flat_header_list(req.requestHeaders)
-                }
-            )
-            req.path = to_str(req.path)
-            req.host = req.headers.get("Host") or "localhost"
-            req.content_encoding = None
-            req.environ = {"RAW_URI": to_str(req.uri)}
-            req.shallow = False
-            req.values = {}
-            req.user_agent = ""
-            req.data = req.content.read()
-            print("!req details", req.__dict__)
-            result = gateway.process(req, response)
-            print("!gateway process result", result, response.status_code)
+        self._ls_forwarder = TcpForwarder(1729)
+        print("!!self.transport", self.transport, self.transport.__dict__)
 
-        # WSGIResource also dispatches requests through the threadpool
-        self.original._threadpool.callInThread(handler, request)
+        def _print(data):
+            print("!RETURN RESPONSE received upstream", data)
+            self.transport.write(data)
 
-    print("!!render req patched", request, request.__dict__, request.clientproto)
-    if request.clientproto == b"HTTP/2":
-        _processH2Request(request)
-        return NOT_DONE_YET
+        reactor.getThreadPool().callInThread(self._ls_forwarder.receive_loop, _print)
 
-    return fn(self, request)
+    @patch(H2Connection.dataReceived)
+    def _dataReceived(fn, self, data, *args, **kwargs):
+        forwarder = getattr(self, "_ls_forwarder", None)
+        if not forwarder:
+            return fn(self, data, *args, **kwargs)
+        print("!!RECEIVED FROM client", data)
+        forwarder.send(data)
 
 
-# class H2Request(TwistedRequest):
-#     def __init__(self, stream: H2Stream):
-#         super().__init__(stream)
-#         self.stream = stream
-#         print("!H2Request", stream)
-#
-#     def connectionLost(self, reason):
-#         print("!H2Request.connectionLost", reason)
-#
-#     def handleContentChunk(self, data):
-#         print("!H2Request.handleContentChunk", data)
-
-
-# @patch(H2Stream.__init__)
-def h2stream_init(fn, self, *args, **kwargs):
-    fn(self, *args, **kwargs)
-    self._request = H2Request(self)
-
-
-@patch(H2Connection._requestReceived)
+# @patch(H2Connection._requestReceived)
 def _requestReceived(fn, self, event, *args, **kwargs):
-    # print("!!_requestReceived 13", event, self)
-    result = fn(self, event, *args, **kwargs)
-
-    stream = self.streams[event.stream_id]
+    # call upstream function
+    fn(self, event, *args, **kwargs)
 
     headers = {to_str(k): to_str(v) for k, v in event.headers}
     method = headers[":method"]
     path = headers[":path"]
     host = headers[":authority"]
     headers = {k: v for k, v in headers.items() if not k.startswith(":")}
-    # print("!event", event, method, path, headers)
     headers["Host"] = host
 
     request = Request(
@@ -246,15 +205,12 @@ def _requestReceived(fn, self, event, *args, **kwargs):
         headers=headers,
         body=None,
     )
-    request.h2_stream = stream
+    request.h2_stream = self.streams[event.stream_id]
     matcher = ROUTER.url_map.bind(server_name=request.host)
-    # print("!request.host", request.host, request)
     handler, args = matcher.match(request.path, method=request.method)
-    # print("!MATCHER", matcher, handler, args)
-    response = ROUTER.dispatcher(request, handler, args)
-    # print("!ROUTER.dispatcher", response)
+    ROUTER.dispatcher(request, handler, args)
 
-    return result
+    return NOT_DONE_YET
 
 
 def get_environment_proxies(*args, **kwargs):
@@ -280,215 +236,79 @@ class ProxyResource:
         self.extension = extension
 
     def __call__(self, request: Request, path, *args, **kwargs):
-        print("!request in __call__", path, type(request))
-        # print("!request.__dict__", request.__dict__)
         stream = getattr(request, "h2_stream", None)
         if not isinstance(stream, H2Stream):
             return
 
         self.extension.start_container()
 
-        # assert isinstance(stream, H2Stream)
         stream.h2_client = httpx.Client(http2=True, http1=False)
-        # h2_request = stream.h2_client.stream
-
         msg_queue = queue.Queue()
 
         def _data_generator():
             while True:
                 try:
-                    message = msg_queue.get(timeout=5)
+                    message = msg_queue.get(timeout=3)
                 except queue.Empty:
-                    yield b""
-                    return
+                    if events.infra_stopping.is_set():
+                        return
+                    continue
                 if message is None:
                     break
-                print("!dequeued message", message)
                 yield message
-                # stream._send100Continue()
                 if message == b"":
                     break
+                # stream._send100Continue()
+                # return
 
         def _receive_chunk(data, flowControlledLength):
-            print("!receive_chunk", self, data, flowControlledLength)
+            print("!_receive_chunk", data, len(data), flowControlledLength)
             msg_queue.put(data)
-            return
-
-            # result = stream.h2_client.request(
-            #     method=request.method,
-            #     path=path,
-            #     data=data,
-            #     headers=request.headers,
-            # )
-            request.data = data
-            result = self._forward_http2_request(request, forward_path=to_str(path))
-
-            print("!receive_chunk response", result, result.headers)
-            headers = [
-                (to_bytes(k), to_bytes(v)) for k, v in dict(result.headers).items()
-            ]
-
-            # headers = {k: v for k, v in dict(response.headers).items() if not k.startswith(":")}
-            headers.insert(0, (b":status", to_bytes(str(result.status_code))))
-
-            # note: using `send_headers(..)` instead of ,
-            print("!!proxied", result, headers)
-            h2_conn = stream._conn
-            # h2_conn.conn.send_headers(stream.streamID, headers)
-            # h2_conn._tryToWriteControlData()
-
-            # stream.writeHeaders(
-            #     None,
-            #     code=to_bytes(str(result.status_code)),
-            #     reason=None,
-            #     headers=headers,
-            # )
-
-            stream.write(result.data)
+            stream._conn.openStreamWindow(stream.streamID, flowControlledLength)
+            print("!_receive_chunk DONE", flowControlledLength)
 
         def _request_complete():
-            print("!request_complete", self)
             msg_queue.put(None)
             # return _request_complete_orig()
-
-        # def _handle_data(response):
-        #     def receiveDataChunk(self, data, flowControlledLength):
 
         stream.receiveDataChunk = _receive_chunk
         _request_complete_orig = stream.requestComplete
         stream.requestComplete = _request_complete
 
-        target_url = f"{self._get_target_url(request)}/{path}"
-        print("!target_url", target_url, request.method)
         def _run_request():
-            print("!run_request", to_str(request.method), target_url, dict(request.headers))
             headers = dict(request.headers)
             headers.pop("content-length", None)
-            result = stream.h2_client.request(
+            target_url = f"{self._get_target_url(request)}/{path}"
+            streaming_response = stream.h2_client.stream(
                 method=to_str(request.method),
                 url=target_url,
                 content=_data_generator(),
                 headers=headers,
             )
-            print("!result123 tmp", result, result.__dict__)
 
-            res_headers = [
-                (to_bytes(k), to_bytes(v)) for k, v in dict(result.headers).items()
-            ]
-            stream.writeHeaders(
-                None,
-                code=to_bytes(str(result.status_code)),
-                reason=None,
-                headers=res_headers,
-            )
+            with streaming_response as response:
+                res_headers = [
+                    (to_bytes(k), to_bytes(v))
+                    for k, v in dict(response.headers).items()
+                ]
+                stream.writeHeaders(
+                    None,
+                    code=to_bytes(str(response.status_code)),
+                    reason=None,
+                    headers=res_headers,
+                )
+                for data in response.iter_bytes():
+                    print("!!!!data123", data)
+                    stream.write(data)
 
-            print("!write response content")
-            stream.write(result.content)
-            print("!ALL DONE")
-            # _request_complete_orig()
-            # stream._conn._tryToWriteControlData()
             stream.requestDone(request)
 
         reactor.getThreadPool().callInThread(_run_request)
-
-        # result = self._forward_http2_request(request, forward_path=to_str(request.path))
-        # assert len(result.data) == int(result.headers["content-length"])
-        # headers = [
-        #     (to_bytes(k), to_bytes(v)) for k, v in dict(result.headers).items()
-        # ]
-        # print("!!proxied", result, headers)
-        # stream.writeHeaders(
-        #     None,
-        #     code=to_bytes(str(result.status_code)),
-        #     reason=None,
-        #     headers=headers,
-        # )
-        # stream.write(result.data)
-
-    def __call2__(self, request: TwistedRequestAdapter, path, *args, **kwargs):
-        assert isinstance(request, TwistedRequestAdapter)
-        self.extension.start_container()
-
-        # print("!CALL", request, path, type(request), request.__dict__)
-        result = self._forward_http2_request(request, forward_path=to_str(request.path))
-        # print("!!request.channel", request.channel, result, result.data)
-        if isinstance(request.channel, H2Stream):
-            assert len(result.data) == int(result.headers["content-length"])
-            headers = [
-                (to_bytes(k), to_bytes(v)) for k, v in dict(result.headers).items()
-            ]
-            request.channel.writeHeaders(
-                None,
-                code=to_bytes(str(result.status_code)),
-                reason=None,
-                headers=headers,
-            )
-            request.channel.write(result.data)
-            # request.channel._send100Continue()
-            request.channel.requestDone(None)
-
-    # @route("/<path:path>")
-    # def index(self, request: Request, path: str, *args, **kwargs):
-    #     return self._proxy_request(request, forward_path=f"/{path}")
-
-    def _proxy_request(self, request: Request, forward_path: str, *args, **kwargs):
-        self.extension.start_container()
-
-        print("!REQ", request, request.__dict__)
-        if request.environ.get("SERVER_PROTOCOL") == "HTTP/2":
-            return self._proxy_http2_request(request, forward_path=forward_path)
-
-        # create proxy
-        base_url = self._get_target_url(request)
-        proxy = Proxy(forward_base_url=base_url)
-
-        # update content length (may have changed due to content compression)
-        if request.method not in ("GET", "OPTIONS"):
-            request.headers["Content-Length"] = str(len(request.data))
-
-        # # make sure we're forwarding the correct Host header
-        # request.headers["Host"] = f"localhost:{port}"
-
-        # forward the request to the target
-        result = proxy.forward(request, forward_path=forward_path)
-
-        return result
-
-    def _proxy_http2_request(
-        self, request: Request, forward_path: str, *args, **kwargs
-    ):
-        result = self._forward_http2_request(request, forward_path=forward_path)
-        return result
-
-    def _forward_http2_request(
-        self, request: Request, forward_path: str, *args, **kwargs
-    ):
-        forward_path = (
-            f"/{forward_path}" if not forward_path.startswith("/") else forward_path
-        )
-        with httpx.Client(http2=True, http1=False) as client:
-            target_url = f"{self._get_target_url(request)}{forward_path}"
-            # print("!request", request.method, target_url, request.headers, request.data)
-            print("!target_url", target_url)
-            response = client.request(
-                method=to_str(request.method),
-                url=target_url,
-                headers=request.headers,
-                content=request.data,
-            )
-            print("!target_url", target_url, response.content, response.status_code)
-            result = Response(
-                response=response.content,
-                status=response.status_code,
-                headers=dict(response.headers),
-            )
-            return result
 
     def _get_target_url(self, request: Request) -> str:
         port = self.extension.container_ports[0]
         if self.extension.request_to_port_router:
             port = self.extension.request_to_port_router(request)
-
         container_host = get_addressable_container_host()
         base_url = f"http://{container_host}:{port}"
         return base_url

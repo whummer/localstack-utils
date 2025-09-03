@@ -17,6 +17,5 @@ class TypeDbExtension(ProxiedDockerContainerExtension):
         )
 
     def request_to_port_router(self, request: Request):
-        print("!REQ target port", request, request.data)
-        # print("!request", request, request.__dict__)
+        # TODO add REST API / gRPC routing based on request
         return 1729
