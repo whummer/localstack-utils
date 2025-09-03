@@ -1,27 +1,23 @@
 import re
 import logging
-import socket
 from functools import cache
 from typing import Callable
-
-import hpack
-from hyperframe.frame import Frame, HeadersFrame
-from twisted.internet import reactor
-
 import requests
+
 from localstack import config
-from localstack.utils.patch import patch
+from localstack_typedb.utils.h2_proxy import apply_http2_patches_for_grpc_support
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
 from localstack.http import Request
 from localstack.utils.container_utils.container_client import PortMappings
 from localstack.utils.net import get_addressable_container_host
 from localstack.utils.sync import retry
-from twisted.web._http2 import H2Connection
 
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
 logging.basicConfig()
+
+TYPEDB_PORT = 1729
 
 
 class ProxiedDockerContainerExtension(Extension):
@@ -65,7 +61,8 @@ class ProxiedDockerContainerExtension(Extension):
             raise NotImplementedError(
                 "Path-based routing not yet implemented for this extension"
             )
-        _apply_patches(self)
+        apply_http2_patches_for_grpc_support(TYPEDB_PORT)
+        self.start_container()
 
     def on_platform_shutdown(self):
         self._remove_container()
@@ -125,82 +122,3 @@ class ProxiedDockerContainerExtension(Extension):
         DOCKER_CLIENT.remove_container(
             container_name, force=True, check_existence=False
         )
-
-
-class TcpForwarder:
-    """Simple helper class for bidirectional forwarding of TPC traffic."""
-
-    buffer_size = 1024
-
-    def __init__(self, port: int, host: str = "localhost"):
-        self.port = port
-        self.host = host
-        self._socket = None
-        self.connect()
-
-    def connect(self):
-        if not self._socket:
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.connect((self.host, self.port))
-
-    def receive_loop(self, callback):
-        while True:
-            data = self._socket.recv(self.buffer_size)
-            callback(data)
-            if not data:
-                break
-
-    def send(self, data):
-        self._socket.sendall(data)
-
-
-def _apply_patches(extension):
-    @patch(H2Connection.connectionMade)
-    def _connectionMade(fn, self, *args, **kwargs):
-        extension.start_container()
-
-        print("!self.conn", self.conn, self.conn.__dict__)
-        self._ls_forwarder = TcpForwarder(1729)
-
-        received_data = []
-        target_endpoint = None
-        in_scope = None
-
-        def _process(data):
-            # decoded = hpack.Decoder().decode(data)
-            # decoded = FrameBuffer(server=True)
-
-            # received_data.append(data)
-            # f, length = Frame.parse_frame_header(data[:9])
-            # print("!DATA", data, f, length)
-            # if not isinstance(f, HeadersFrame):
-            #     return
-            # f.parse_body(memoryview(data[9:9+length]))
-            # body = hpack.Decoder().decode(f.data)
-            # print('!header', f, length, body)
-
-            # decoded.add_data(data)
-            # print("!decoded", decoded, next(decoded))
-            self.transport.write(data)
-
-        reactor.getThreadPool().callInThread(self._ls_forwarder.receive_loop, _process)
-
-    @patch(H2Connection.dataReceived)
-    def _dataReceived(fn, self, data, *args, **kwargs):
-        forwarder = getattr(self, "_ls_forwarder", None)
-        if not forwarder:
-            return fn(self, data, *args, **kwargs)
-
-        remaining_data = data
-        while remaining_data:
-            frame, length = Frame.parse_frame_header(remaining_data[:9])
-            print("!DATA", remaining_data[9 : 9 + length], frame, length)
-            if isinstance(frame, HeadersFrame):
-                frame.parse_body(memoryview(remaining_data[9 : 9 + length]))
-                print("!!HEADER", frame, frame.data)
-                decoder = hpack.Decoder()
-                body = decoder.decode(frame.data, raw=True)
-                print("!header", frame, length, body)
-            remaining_data = remaining_data[9 + length :]
-
-        forwarder.send(data)
