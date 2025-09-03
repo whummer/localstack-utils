@@ -1,20 +1,16 @@
-import queue
 import re
 import logging
 import socket
 from functools import cache
 from typing import Callable
 
-from localstack.runtime import events
+import hpack
+from hyperframe.frame import Frame, HeadersFrame
 from twisted.internet import reactor
-from twisted.web._http2 import H2Stream
 
 import requests
-import httpx._utils
 from localstack import config
-from localstack.services.edge import ROUTER
 from localstack.utils.patch import patch
-from localstack.utils.strings import to_str, to_bytes
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
 from localstack.http import Request
@@ -22,7 +18,6 @@ from localstack.utils.container_utils.container_client import PortMappings
 from localstack.utils.net import get_addressable_container_host
 from localstack.utils.sync import retry
 from twisted.web._http2 import H2Connection
-from twisted.web.server import NOT_DONE_YET
 
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
@@ -70,13 +65,6 @@ class ProxiedDockerContainerExtension(Extension):
             raise NotImplementedError(
                 "Path-based routing not yet implemented for this extension"
             )
-        router.add(
-            path="/<path:path>",
-            host=self.host,
-            endpoint=ProxyResource(self),
-            defaults={},
-            strict_slashes=False,
-        )
         _apply_patches(self)
 
     def on_platform_shutdown(self):
@@ -140,10 +128,13 @@ class ProxiedDockerContainerExtension(Extension):
 
 
 class TcpForwarder:
+    """Simple helper class for bidirectional forwarding of TPC traffic."""
+
+    buffer_size = 1024
+
     def __init__(self, port: int, host: str = "localhost"):
         self.port = port
         self.host = host
-        self._buffer_size = 1024
         self._socket = None
         self.connect()
 
@@ -153,9 +144,8 @@ class TcpForwarder:
             self._socket.connect((self.host, self.port))
 
     def receive_loop(self, callback):
-        self.connect()
         while True:
-            data = self._socket.recv(self._buffer_size)
+            data = self._socket.recv(self.buffer_size)
             callback(data)
             if not data:
                 break
@@ -169,146 +159,48 @@ def _apply_patches(extension):
     def _connectionMade(fn, self, *args, **kwargs):
         extension.start_container()
 
+        print("!self.conn", self.conn, self.conn.__dict__)
         self._ls_forwarder = TcpForwarder(1729)
-        print("!!self.transport", self.transport, self.transport.__dict__)
 
-        def _print(data):
-            print("!RETURN RESPONSE received upstream", data)
+        received_data = []
+        target_endpoint = None
+        in_scope = None
+
+        def _process(data):
+            # decoded = hpack.Decoder().decode(data)
+            # decoded = FrameBuffer(server=True)
+
+            # received_data.append(data)
+            # f, length = Frame.parse_frame_header(data[:9])
+            # print("!DATA", data, f, length)
+            # if not isinstance(f, HeadersFrame):
+            #     return
+            # f.parse_body(memoryview(data[9:9+length]))
+            # body = hpack.Decoder().decode(f.data)
+            # print('!header', f, length, body)
+
+            # decoded.add_data(data)
+            # print("!decoded", decoded, next(decoded))
             self.transport.write(data)
 
-        reactor.getThreadPool().callInThread(self._ls_forwarder.receive_loop, _print)
+        reactor.getThreadPool().callInThread(self._ls_forwarder.receive_loop, _process)
 
     @patch(H2Connection.dataReceived)
     def _dataReceived(fn, self, data, *args, **kwargs):
         forwarder = getattr(self, "_ls_forwarder", None)
         if not forwarder:
             return fn(self, data, *args, **kwargs)
-        print("!!RECEIVED FROM client", data)
+
+        remaining_data = data
+        while remaining_data:
+            frame, length = Frame.parse_frame_header(remaining_data[:9])
+            print("!DATA", remaining_data[9 : 9 + length], frame, length)
+            if isinstance(frame, HeadersFrame):
+                frame.parse_body(memoryview(remaining_data[9 : 9 + length]))
+                print("!!HEADER", frame, frame.data)
+                decoder = hpack.Decoder()
+                body = decoder.decode(frame.data, raw=True)
+                print("!header", frame, length, body)
+            remaining_data = remaining_data[9 + length :]
+
         forwarder.send(data)
-
-
-# @patch(H2Connection._requestReceived)
-def _requestReceived(fn, self, event, *args, **kwargs):
-    # call upstream function
-    fn(self, event, *args, **kwargs)
-
-    headers = {to_str(k): to_str(v) for k, v in event.headers}
-    method = headers[":method"]
-    path = headers[":path"]
-    host = headers[":authority"]
-    headers = {k: v for k, v in headers.items() if not k.startswith(":")}
-    headers["Host"] = host
-
-    request = Request(
-        method=method,
-        path=path,
-        headers=headers,
-        body=None,
-    )
-    request.h2_stream = self.streams[event.stream_id]
-    matcher = ROUTER.url_map.bind(server_name=request.host)
-    handler, args = matcher.match(request.path, method=request.method)
-    ROUTER.dispatcher(request, handler, args)
-
-    return NOT_DONE_YET
-
-
-def get_environment_proxies(*args, **kwargs):
-    # small patch to fix handling of proxy keys like 'all://*[::1]'
-    result = get_environment_proxies_orig(*args, **kwargs)
-    return {k: v for k, v in result.items() if "[::1]" not in k}
-
-
-get_environment_proxies_orig = httpx._utils.get_environment_proxies
-httpx._utils.get_environment_proxies = get_environment_proxies
-httpx._client.get_environment_proxies = get_environment_proxies
-
-
-class ProxyResource:
-    """
-    Simple proxy resource that forwards incoming requests from the
-    LocalStack Gateway to the target Docker container.
-    """
-
-    extension: ProxiedDockerContainerExtension
-
-    def __init__(self, extension: ProxiedDockerContainerExtension):
-        self.extension = extension
-
-    def __call__(self, request: Request, path, *args, **kwargs):
-        stream = getattr(request, "h2_stream", None)
-        if not isinstance(stream, H2Stream):
-            return
-
-        self.extension.start_container()
-
-        stream.h2_client = httpx.Client(http2=True, http1=False)
-        msg_queue = queue.Queue()
-
-        def _data_generator():
-            while True:
-                try:
-                    message = msg_queue.get(timeout=3)
-                except queue.Empty:
-                    if events.infra_stopping.is_set():
-                        return
-                    continue
-                if message is None:
-                    break
-                yield message
-                if message == b"":
-                    break
-                # stream._send100Continue()
-                # return
-
-        def _receive_chunk(data, flowControlledLength):
-            print("!_receive_chunk", data, len(data), flowControlledLength)
-            msg_queue.put(data)
-            stream._conn.openStreamWindow(stream.streamID, flowControlledLength)
-            print("!_receive_chunk DONE", flowControlledLength)
-
-        def _request_complete():
-            msg_queue.put(None)
-            # return _request_complete_orig()
-
-        stream.receiveDataChunk = _receive_chunk
-        _request_complete_orig = stream.requestComplete
-        stream.requestComplete = _request_complete
-
-        def _run_request():
-            headers = dict(request.headers)
-            headers.pop("content-length", None)
-            target_url = f"{self._get_target_url(request)}/{path}"
-            streaming_response = stream.h2_client.stream(
-                method=to_str(request.method),
-                url=target_url,
-                content=_data_generator(),
-                headers=headers,
-            )
-
-            with streaming_response as response:
-                res_headers = [
-                    (to_bytes(k), to_bytes(v))
-                    for k, v in dict(response.headers).items()
-                ]
-                stream.writeHeaders(
-                    None,
-                    code=to_bytes(str(response.status_code)),
-                    reason=None,
-                    headers=res_headers,
-                )
-                for data in response.iter_bytes():
-                    print("!!!!data123", data)
-                    stream.write(data)
-
-            stream.requestDone(request)
-
-        reactor.getThreadPool().callInThread(_run_request)
-
-    def _get_target_url(self, request: Request) -> str:
-        port = self.extension.container_ports[0]
-        if self.extension.request_to_port_router:
-            port = self.extension.request_to_port_router(request)
-        container_host = get_addressable_container_host()
-        base_url = f"http://{container_host}:{port}"
-        return base_url
