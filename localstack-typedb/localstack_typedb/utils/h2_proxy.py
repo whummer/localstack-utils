@@ -1,9 +1,12 @@
+import logging
 import socket
 
 from twisted.internet import reactor
 
 from localstack.utils.patch import patch
 from twisted.web._http2 import H2Connection
+
+LOG = logging.getLogger(__name__)
 
 
 class TcpForwarder:
@@ -33,7 +36,7 @@ class TcpForwarder:
         self._socket.sendall(data)
 
 
-def apply_http2_patches_for_grpc_support(target_port: int):
+def apply_http2_patches_for_grpc_support(target_host: str, target_port: int):
     """
     Apply some patches to proxy incoming gRPC requests and forward them to a target port.
     Note: this is a very brute-force approach and needs to be fixed/enhanced over time!
@@ -42,10 +45,14 @@ def apply_http2_patches_for_grpc_support(target_port: int):
     @patch(H2Connection.connectionMade)
     def _connectionMade(fn, self, *args, **kwargs):
         def _process(data):
+            LOG.debug("Received data (%s bytes) from upstream HTTP2 server", len(data))
             self.transport.write(data)
 
         # TODO: make port configurable
-        self._ls_forwarder = TcpForwarder(target_port)
+        self._ls_forwarder = TcpForwarder(target_port, host=target_host)
+        LOG.debug(
+            "Starting TCP forwarder to port %s for new HTTP2 connection", target_port
+        )
         reactor.getThreadPool().callInThread(self._ls_forwarder.receive_loop, _process)
 
     @patch(H2Connection.dataReceived)
@@ -53,4 +60,5 @@ def apply_http2_patches_for_grpc_support(target_port: int):
         forwarder = getattr(self, "_ls_forwarder", None)
         if not forwarder:
             return fn(self, data, *args, **kwargs)
+        LOG.debug("Forwarding data (%s bytes) from HTTP2 client to server", len(data))
         forwarder.send(data)

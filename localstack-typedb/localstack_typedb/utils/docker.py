@@ -12,9 +12,14 @@ from localstack.http import Request
 from localstack.utils.container_utils.container_client import PortMappings
 from localstack.utils.net import get_addressable_container_host
 from localstack.utils.sync import retry
+from rolo import route
+from rolo.proxy import Proxy
+from rolo.routing import RuleAdapter, WithHost
 
 LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
+logging.getLogger("localstack_typedb").setLevel(
+    logging.DEBUG if config.DEBUG else logging.INFO
+)
 logging.basicConfig()
 
 TYPEDB_PORT = 1729
@@ -61,8 +66,16 @@ class ProxiedDockerContainerExtension(Extension):
             raise NotImplementedError(
                 "Path-based routing not yet implemented for this extension"
             )
-        apply_http2_patches_for_grpc_support(TYPEDB_PORT)
         self.start_container()
+        # add resource for HTTP/1.1 requests
+        resource = RuleAdapter(ProxyResource(self))
+        if self.host:
+            resource = WithHost(self.host, [resource])
+        router.add(resource)
+        # apply patches to serve HTTP/2 requests
+        apply_http2_patches_for_grpc_support(
+            get_addressable_container_host(), TYPEDB_PORT
+        )
 
     def on_platform_shutdown(self):
         self._remove_container()
@@ -122,3 +135,39 @@ class ProxiedDockerContainerExtension(Extension):
         DOCKER_CLIENT.remove_container(
             container_name, force=True, check_existence=False
         )
+
+
+class ProxyResource:
+    """
+    Simple proxy resource that forwards incoming requests from the
+    LocalStack Gateway to the target Docker container.
+    """
+
+    extension: ProxiedDockerContainerExtension
+
+    def __init__(self, extension: ProxiedDockerContainerExtension):
+        self.extension = extension
+
+    @route("/<path:path>")
+    def index(self, request: Request, path: str, *args, **kwargs):
+        return self._proxy_request(request, forward_path=f"/{path}")
+
+    def _proxy_request(self, request: Request, forward_path: str, *args, **kwargs):
+        self.extension.start_container()
+
+        port = self.extension.container_ports[0]
+        container_host = get_addressable_container_host()
+        base_url = f"http://{container_host}:{port}"
+        proxy = Proxy(forward_base_url=base_url)
+
+        # update content length (may have changed due to content compression)
+        if request.method not in ("GET", "OPTIONS"):
+            request.headers["Content-Length"] = str(len(request.data))
+
+        # make sure we're forwarding the correct Host header
+        request.headers["Host"] = f"localhost:{port}"
+
+        # forward the request to the target
+        result = proxy.forward(request, forward_path=forward_path)
+
+        return result
