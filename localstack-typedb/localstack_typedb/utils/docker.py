@@ -22,8 +22,6 @@ logging.getLogger("localstack_typedb").setLevel(
 )
 logging.basicConfig()
 
-TYPEDB_PORT = 1729
-
 
 class ProxiedDockerContainerExtension(Extension):
     name: str
@@ -41,9 +39,13 @@ class ProxiedDockerContainerExtension(Extension):
     """
     path: str | None
     """Optional path on which to expose the container endpoints."""
+    command: list[str] | None
+    """Optional command (and flags) to execute in the container."""
 
     request_to_port_router: Callable[[Request], int] | None
     """Callable that returns the target port for a given request, for routing purposes"""
+    http2_ports: list[int] | None
+    """List of ports for which HTTP2 proxy forwarding into the container should be enabled."""
 
     def __init__(
         self,
@@ -52,14 +54,18 @@ class ProxiedDockerContainerExtension(Extension):
         host: str | None = None,
         path: str | None = None,
         container_name: str | None = None,
+        command: list[str] | None = None,
         request_to_port_router: Callable[[Request], int] | None = None,
+        http2_ports: list[int] | None = None,
     ):
         self.image_name = image_name
         self.container_ports = container_ports
         self.host = host
         self.path = path
         self.container_name = container_name
+        self.command = command
         self.request_to_port_router = request_to_port_router
+        self.http2_ports = http2_ports
 
     def update_gateway_routes(self, router: http.Router[http.RouteHandler]):
         if self.path:
@@ -72,10 +78,10 @@ class ProxiedDockerContainerExtension(Extension):
         if self.host:
             resource = WithHost(self.host, [resource])
         router.add(resource)
+
         # apply patches to serve HTTP/2 requests
-        apply_http2_patches_for_grpc_support(
-            get_addressable_container_host(), TYPEDB_PORT
-        )
+        for port in self.http2_ports or []:
+            apply_http2_patches_for_grpc_support(get_addressable_container_host(), port)
 
     def on_platform_shutdown(self):
         self._remove_container()
@@ -95,12 +101,18 @@ class ProxiedDockerContainerExtension(Extension):
         ports = PortMappings()
         for port in self.container_ports:
             ports.add(port)
+
+        kwargs = {}
+        if self.command:
+            kwargs["command"] = self.command
+
         DOCKER_CLIENT.run_container(
             self.image_name,
             detach=True,
             remove=True,
             name=container_name,
             ports=ports,
+            **kwargs,
         )
 
         main_port = self.container_ports[0]
@@ -117,15 +129,6 @@ class ProxiedDockerContainerExtension(Extension):
             LOG.info("Failed to connect to container %s: %s", container_name, e)
             self._remove_container()
             raise
-
-        # TODO: enable support for TCP port proxying!
-        # for port in self.container_ports:
-        #     proxy = TCPProxy(
-        #         target_address="localhost",
-        #         target_port=port,
-        #         port=...,
-        #         host="...",
-        #     )
 
         LOG.debug("Successfully started extension container %s", container_name)
 
