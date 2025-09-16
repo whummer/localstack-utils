@@ -1,6 +1,7 @@
 import os
 import shlex
 
+from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack_typedb.utils.docker import ProxiedDockerContainerExtension
 from rolo import Request
 
@@ -21,7 +22,8 @@ class TypeDbExtension(ProxiedDockerContainerExtension):
 
     def __init__(self):
         command_flags = (os.environ.get(ENV_CMD_FLAGS) or "").strip()
-        command = self.DEFAULT_CMD_FLAGS + shlex.split(command_flags)
+        command_flags = self.DEFAULT_CMD_FLAGS + shlex.split(command_flags)
+        command = self._get_image_command() + command_flags
         super().__init__(
             image_name=self.DOCKER_IMAGE,
             container_ports=[8000, 1729],
@@ -30,6 +32,11 @@ class TypeDbExtension(ProxiedDockerContainerExtension):
             command=command,
             http2_ports=[self.TYPEDB_PORT],
         )
+
+    def _get_image_command(self) -> list[str]:
+        result = DOCKER_CLIENT.inspect_image(self.DOCKER_IMAGE)
+        image_command = result["Config"]["Cmd"]
+        return image_command
 
     def request_to_port_router(self, request: Request):
         # TODO add REST API / gRPC routing based on request
