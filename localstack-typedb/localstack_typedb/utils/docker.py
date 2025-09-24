@@ -5,6 +5,7 @@ from typing import Callable
 import requests
 
 from localstack import config
+from localstack.config import is_env_true
 from localstack_typedb.utils.h2_proxy import apply_http2_patches_for_grpc_support
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
@@ -106,14 +107,20 @@ class ProxiedDockerContainerExtension(Extension):
         if self.command:
             kwargs["command"] = self.command
 
-        DOCKER_CLIENT.run_container(
-            self.image_name,
-            detach=True,
-            remove=True,
-            name=container_name,
-            ports=ports,
-            **kwargs,
-        )
+        try:
+            DOCKER_CLIENT.run_container(
+                self.image_name,
+                detach=True,
+                remove=True,
+                name=container_name,
+                ports=ports,
+                **kwargs,
+            )
+        except Exception as e:
+            LOG.debug("Failed to start container %s: %s", container_name, e)
+            # allow running TypeDB in a local server in dev mode, if TYPEDB_DEV_MODE is enabled
+            if not is_env_true("TYPEDB_DEV_MODE"):
+                raise
 
         main_port = self.container_ports[0]
         container_host = get_addressable_container_host()
