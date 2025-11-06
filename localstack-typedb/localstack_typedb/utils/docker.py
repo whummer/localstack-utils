@@ -6,7 +6,10 @@ import requests
 
 from localstack import config
 from localstack.config import is_env_true
-from localstack_typedb.utils.h2_proxy import apply_http2_patches_for_grpc_support
+from localstack_typedb.utils.h2_proxy import (
+    apply_http2_patches_for_grpc_support,
+    ProxyRequestMatcher,
+)
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
 from localstack.http import Request
@@ -16,6 +19,7 @@ from localstack.utils.sync import retry
 from rolo import route
 from rolo.proxy import Proxy
 from rolo.routing import RuleAdapter, WithHost
+from werkzeug.datastructures import Headers
 
 LOG = logging.getLogger(__name__)
 logging.getLogger("localstack_typedb").setLevel(
@@ -24,7 +28,7 @@ logging.getLogger("localstack_typedb").setLevel(
 logging.basicConfig()
 
 
-class ProxiedDockerContainerExtension(Extension):
+class ProxiedDockerContainerExtension(Extension, ProxyRequestMatcher):
     name: str
     """Name of this extension"""
     image_name: str
@@ -82,7 +86,9 @@ class ProxiedDockerContainerExtension(Extension):
 
         # apply patches to serve HTTP/2 requests
         for port in self.http2_ports or []:
-            apply_http2_patches_for_grpc_support(get_addressable_container_host(), port)
+            apply_http2_patches_for_grpc_support(
+                get_addressable_container_host(), port, self
+            )
 
     def on_platform_shutdown(self):
         self._remove_container()
@@ -93,6 +99,15 @@ class ProxiedDockerContainerExtension(Extension):
         name = f"ls-ext-{self.name}"
         name = re.sub(r"\W", "-", name)
         return name
+
+    def should_proxy_request(self, headers: Headers) -> bool:
+        # determine if this is a gRPC request targeting TypeDB
+        content_type = headers.get("content-type") or ""
+        req_path = headers.get(":path") or ""
+        is_typedb_grpc_request = (
+            "grpc" in content_type and "/typedb.protocol.TypeDB" in req_path
+        )
+        return is_typedb_grpc_request
 
     @cache
     def start_container(self) -> None:
