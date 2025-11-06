@@ -1,10 +1,14 @@
 import logging
 import socket
 
+from h2.frame_buffer import FrameBuffer
+from hpack import Decoder
+from hyperframe.frame import HeadersFrame
 from twisted.internet import reactor
 
 from localstack.utils.patch import patch
 from twisted.web._http2 import H2Connection
+
 
 LOG = logging.getLogger(__name__)
 
@@ -35,6 +39,15 @@ class TcpForwarder:
     def send(self, data):
         self._socket.sendall(data)
 
+    def close(self):
+        LOG.debug("Closing connection to upstream HTTP2 server on port %s", self.port)
+        try:
+            self._socket.shutdown(socket.SHUT_RDWR)
+            self._socket.close()
+        except Exception:
+            # swallow exceptions here (e.g., "bad file descriptor")
+            pass
+
 
 def apply_http2_patches_for_grpc_support(target_host: str, target_port: int):
     """
@@ -58,7 +71,86 @@ def apply_http2_patches_for_grpc_support(target_host: str, target_port: int):
     @patch(H2Connection.dataReceived)
     def _dataReceived(fn, self, data, *args, **kwargs):
         forwarder = getattr(self, "_ls_forwarder", None)
-        if not forwarder:
+        is_typedb_grpc_request = getattr(self, "_is_typedb_grpc_request", None)
+        if not forwarder or is_typedb_grpc_request is False:
             return fn(self, data, *args, **kwargs)
-        LOG.debug("Forwarding data (%s bytes) from HTTP2 client to server", len(data))
-        forwarder.send(data)
+
+        if is_typedb_grpc_request:
+            forwarder.send(data)
+            return
+
+        setattr(self, "_data_received", getattr(self, "_data_received", []))
+        self._data_received.append(data)
+
+        # parse headers from request frames received so far
+        headers = get_headers_from_data_stream(self._data_received)
+        if not headers:
+            # if no headers received yet, then return (method will be called again for next chunk of data)
+            return
+
+        # determine if this is a gRPC request targeting TypeDB - TODO make configurable!
+        content_type = headers.get("content-type") or ""
+        req_path = headers.get(":path") or ""
+        self._is_typedb_grpc_request = (
+            "grpc" in content_type and "/typedb.protocol.TypeDB" in req_path
+        )
+
+        if not self._is_typedb_grpc_request:
+            # if this is not a target request, then call the upstream function
+            result = None
+            for chunk in self._data_received:
+                result = fn(self, chunk, *args, **kwargs)
+            self._data_received = []
+            return result
+
+        # forward data chunks to the target
+        for chunk in self._data_received:
+            LOG.debug(
+                "Forwarding data (%s bytes) from HTTP2 client to server", len(chunk)
+            )
+            forwarder.send(chunk)
+        self._data_received = []
+
+    @patch(H2Connection.connectionLost)
+    def connectionLost(fn, self, *args, **kwargs):
+        forwarder = getattr(self, "_ls_forwarder", None)
+        if not forwarder:
+            return fn(self, *args, **kwargs)
+        forwarder.close()
+
+
+def get_headers_from_data_stream(data_list: list) -> dict:
+    """Get headers from a data stream (list of bytes data), if any headers are contained."""
+    data_combined = b"".join(data_list)
+    frames = parse_http2_stream(data_combined)
+    headers = get_headers_from_frames(frames)
+    return headers
+
+
+def get_headers_from_frames(frames: list) -> dict:
+    """Parse the given list of HTTP2 frames and return a dict of headers, if any"""
+    result = {}
+    decoder = Decoder()
+    for frame in frames:
+        if isinstance(frame, HeadersFrame):
+            try:
+                headers = decoder.decode(frame.data)
+                result.update(dict(headers))
+            except Exception:
+                pass
+    return result
+
+
+def parse_http2_stream(data: bytes) -> list:
+    """Parse the data from an HTTP2 stream into a list of frames"""
+    frames = []
+    buffer = FrameBuffer(server=True)
+    buffer.max_frame_size = 16384
+    buffer.add_data(data)
+    try:
+        for frame in buffer:
+            frames.append(frame)
+    except Exception:
+        pass
+
+    return frames

@@ -36,7 +36,7 @@ format:		    ## Run ruff to format the whole codebase
 	$(VENV_RUN); python -m ruff format .; python -m ruff check --output-format=full --fix .
 
 test:		    ## Run integration tests (requires LocalStack running with the Extension installed)
-	$(VENV_RUN); pytest tests
+	$(VENV_RUN); pytest tests $(PYTEST_ARGS)
 
 clean-dist: clean
 	rm -rf dist/
