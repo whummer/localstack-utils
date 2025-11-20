@@ -1,0 +1,39 @@
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: localstack
+  title: LocalStack (AWS Local Cloud)
+  description: >
+    LocalStack provides an AWS cloud emulator running in a single container.
+    Use this image for local development and integration tests.
+  tags:
+    - aws
+    - localstack
+    - docker
+    - testing
+  links:
+    - url: https://hub.docker.com/r/localstack/localstack
+      title: Docker Hub – localstack/localstack
+      icon: docker
+    - url: https://docs.localstack.cloud/getting-started/
+      title: LocalStack Docs – Getting Started
+      icon: docs
+    - url: https://docs.localstack.cloud/user-guide/integrations/docker/
+      title: LocalStack Docker usage
+      icon: docs
+  annotations:
+    # custom annotations we can use across our org
+    localstack.cloud/docker-image: localstack/localstack:latest
+    localstack.cloud/docs-url: https://docs.localstack.cloud/
+spec:
+  type: container
+  lifecycle: production
+  owner: platform-team
+  system: developer-platform
+  definition:
+    image: localstack/localstack
+    defaultTag: latest
+    recommendedTags:
+      - "4"
+      - "4.10"
+      - "latest"
