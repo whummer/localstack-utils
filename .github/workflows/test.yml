@@ -2,6 +2,15 @@ name: LocalStack TypeDB Extension Tests
 
 on:
   pull_request:
+    branches:
+      - main
+    paths:
+      - 'localstack-wiremock/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'localstack-wiremock/**'
   workflow_dispatch:
 
 env:
