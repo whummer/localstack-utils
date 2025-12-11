@@ -42,7 +42,7 @@ sample:		    ## Deploy sample app
 	bin/create-stubs.sh
 	(cd sample-app; tflocal init; tflocal apply -auto-approve)
 	apiId=$$(awslocal apigateway get-rest-apis | jq -r '.items[0].id'); \
-	    curl -k https://$$apiId.execute-api.us-east-1.localhost.localstack.cloud/dev/time-off
+	    curl -k https://$$apiId.execute-api.us-east-1.localhost.localstack.cloud/dev/time-off | grep time_off_date
 
 clean-dist: clean
 	rm -rf dist/

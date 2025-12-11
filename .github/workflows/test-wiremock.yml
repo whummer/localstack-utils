@@ -26,13 +26,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup LocalStack and extension
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Set up LocalStack and extension
         run: |
           cd localstack-wiremock
 
           docker pull localstack/localstack-pro &
           docker pull wiremock/wiremock &
-          pip install localstack terraform-local
+          pip install localstack terraform-local awscli-local[ver1]
 
           make install
           make dist
