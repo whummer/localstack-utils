@@ -1,4 +1,4 @@
-name: LocalStack TypeDB Extension Tests
+name: LocalStack WireMock Extension Tests
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ env:
 
 jobs:
   integration-tests:
-    name: Run Integration Tests
+    name: Run WireMock Extension Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -28,23 +28,23 @@ jobs:
 
       - name: Setup LocalStack and extension
         run: |
-          cd localstack-typedb
+          cd localstack-wiremock
 
           docker pull localstack/localstack-pro &
-          docker pull typedb/typedb &
-          pip install localstack
+          docker pull wiremock/wiremock &
+          pip install localstack terraform-local
 
           make install
           make dist
-          localstack extensions -v install file://$(ls ./dist/localstack_typedb-*.tar.gz)
+          localstack extensions -v install file://$(ls ./dist/localstack_wiremock-*.tar.gz)
 
           DEBUG=1 localstack start -d
           localstack wait
 
-      - name: Run integration tests
+      - name: Run sample app test
         run: |
-          cd localstack-typedb
-          make test
+          cd localstack-wiremock
+          make sample
 
       - name: Print logs
         if: always()

@@ -1,7 +1,7 @@
 WireMock on LocalStack
-===============================
+========================
 
-This repo contains a [LocalStack Extension](https://github.com/localstack/localstack-extensions) that facilitates developing WireMock-based applications locally.
+This repo contains a [LocalStack Extension](https://github.com/localstack/localstack-extensions) that facilitates developing [WireMock](https://wiremock.org)-based applications locally.
 
 ## Prerequisites
 
