@@ -26,7 +26,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup LocalStack and extension
+      - name: Set up LocalStack and extension
         run: |
           cd localstack-typedb
 

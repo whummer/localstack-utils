@@ -35,6 +35,7 @@ jobs:
 
           docker pull localstack/localstack-pro &
           docker pull wiremock/wiremock &
+          docker pull public.ecr.aws/lambda/python:3.9 &
           pip install localstack terraform-local awscli-local[ver1]
 
           make install

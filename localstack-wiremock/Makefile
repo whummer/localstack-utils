@@ -39,10 +39,14 @@ test:		    ## Run integration tests (requires LocalStack running with the Extens
 	$(VENV_RUN); pytest tests $(PYTEST_ARGS)
 
 sample:		    ## Deploy sample app
+	echo "Creating stubs in WireMock ..."
 	bin/create-stubs.sh
+	echo "Deploying sample app into LocalStack via Terraform ..."
 	(cd sample-app; tflocal init; tflocal apply -auto-approve)
 	apiId=$$(awslocal apigateway get-rest-apis | jq -r '.items[0].id'); \
-	    curl -k https://$$apiId.execute-api.us-east-1.localhost.localstack.cloud/dev/time-off | grep time_off_date
+	    endpoint=https://$$apiId.execute-api.us-east-1.localhost.localstack.cloud/dev/time-off; \
+	    echo "Invoking local API Gateway endpoint: $$endpoint"; \
+	    curl -k -v $$endpoint | grep time_off_date
 
 clean-dist: clean
 	rm -rf dist/
