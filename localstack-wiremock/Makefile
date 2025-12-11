@@ -40,7 +40,9 @@ test:		    ## Run integration tests (requires LocalStack running with the Extens
 
 sample:		    ## Deploy sample app
 	bin/create-stubs.sh
-	(cd sample-app; tflocal init; tflocal apply)
+	(cd sample-app; tflocal init; tflocal apply -auto-approve)
+	apiId=$$(awslocal apigateway get-rest-apis | jq -r '.items[0].id'); \
+	    curl -k https://$$apiId.execute-api.us-east-1.localhost.localstack.cloud/dev/time-off
 
 clean-dist: clean
 	rm -rf dist/

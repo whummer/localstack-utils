@@ -8,7 +8,7 @@ def get_time_off(event, context):
     and returns a transformed JSON response.
     """
     try:
-        # The mock API endpoint URL
+        # Define the mock API endpoint URL (hardcoding `host.docker.internal` for now)
         # url = "http://wiremock.localhost.localstack.cloud:8080/company/time-offs/534813865"
         url = "http://host.docker.internal:8080/company/time-offs/534813865"
 

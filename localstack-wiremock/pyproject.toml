@@ -14,9 +14,7 @@ authors = [
 keywords = ["LocalStack", "WireMock"]
 classifiers = []
 dependencies = [
-    "httpx",
-    "h2",
-    "priority",
+    "priority"
 ]
 
 [project.urls]
@@ -35,4 +33,4 @@ dev = [
 ]
 
 [project.entry-points."localstack.extensions"]
-localstack_wiremock = "localstack_wiremock.extension:WireMockExtension"
+localstack-wiremock = "localstack_wiremock.extension:WireMockExtension"

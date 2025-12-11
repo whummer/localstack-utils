@@ -4,10 +4,6 @@ from functools import cache
 from typing import Callable
 import requests
 
-from localstack_wiremock.utils.h2_proxy import (
-    apply_http2_patches_for_grpc_support,
-    ProxyRequestMatcher,
-)
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
 from localstack.http import Request
@@ -24,7 +20,7 @@ logging.basicConfig()
 # TODO: merge utils with code in TypeDB extension over time ...
 
 
-class ProxiedDockerContainerExtension(Extension, ProxyRequestMatcher):
+class ProxiedDockerContainerExtension(Extension):
     name: str
     """Name of this extension"""
     image_name: str
@@ -80,12 +76,6 @@ class ProxiedDockerContainerExtension(Extension, ProxyRequestMatcher):
             resource = WithHost(self.host, [resource])
         router.add(resource)
 
-        # apply patches to serve HTTP/2 requests
-        for port in self.http2_ports or []:
-            apply_http2_patches_for_grpc_support(
-                get_addressable_container_host(), port, self
-            )
-
     def on_platform_shutdown(self):
         self._remove_container()
 
@@ -127,7 +117,9 @@ class ProxiedDockerContainerExtension(Extension, ProxyRequestMatcher):
 
         def _ping_endpoint():
             # TODO: allow defining a custom healthcheck endpoint ...
-            response = requests.get(f"http://{container_host}:{main_port}/")
+            response = requests.get(
+                f"http://{container_host}:{main_port}/__admin/health"
+            )
             assert response.ok
 
         try:
