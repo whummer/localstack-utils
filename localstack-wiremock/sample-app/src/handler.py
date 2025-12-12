@@ -8,9 +8,9 @@ def get_time_off(event, context):
     and returns a transformed JSON response.
     """
     try:
-        # Define the mock API endpoint URL (hardcoding `host.docker.internal` for now)
-        # url = "http://wiremock.localhost.localstack.cloud:8080/company/time-offs/534813865"
-        url = "http://host.docker.internal:8080/company/time-offs/534813865"
+        # Define the mock API endpoint URL (hardcoding `wiremock.localhost.localstack.cloud` for
+        # local dev for now - could be injected via env variables in the future ...)
+        url = "http://wiremock.localhost.localstack.cloud:4566/company/time-offs/534813865"
 
         # Make a GET request to the mock API
         response = requests.get(url, timeout=5)
@@ -41,6 +41,7 @@ def get_time_off(event, context):
             "message": "Could not connect to the downstream HR service.",
             "error": str(e),
         }
+        print("Error:", error_message)
         return {
             "statusCode": 503,  # Service Unavailable
             "headers": {"Content-Type": "application/json"},
@@ -49,6 +50,7 @@ def get_time_off(event, context):
     except Exception as e:
         # Handle other unexpected errors (e.g., JSON parsing issues, programming errors)
         error_message = {"message": "An unexpected error occurred.", "error": str(e)}
+        print("Error:", error_message)
         return {
             "statusCode": 500,  # Internal Server Error
             "headers": {"Content-Type": "application/json"},
