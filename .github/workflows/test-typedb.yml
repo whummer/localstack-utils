@@ -5,12 +5,12 @@ on:
     branches:
       - main
     paths:
-      - 'localstack-wiremock/**'
+      - 'localstack-typedb/**'
   push:
     branches:
       - main
     paths:
-      - 'localstack-wiremock/**'
+      - 'localstack-typedb/**'
   workflow_dispatch:
 
 env:
@@ -19,14 +19,14 @@ env:
 
 jobs:
   integration-tests:
-    name: Run Integration Tests
+    name: Run TypeDB Extension Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup LocalStack and extension
+      - name: Set up LocalStack and extension
         run: |
           cd localstack-typedb
 
