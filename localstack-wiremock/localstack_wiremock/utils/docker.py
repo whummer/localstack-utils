@@ -7,7 +7,7 @@ import requests
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.extensions.api import Extension, http
 from localstack.http import Request
-from localstack.utils.container_utils.container_client import PortMappings
+from localstack.utils.container_utils.container_client import PortMappings, SimpleVolumeBind
 from localstack.utils.net import get_addressable_container_host
 from localstack.utils.sync import retry
 from rolo import route
@@ -44,6 +44,9 @@ class ProxiedDockerContainerExtension(Extension):
     http2_ports: list[int] | None
     """List of ports for which HTTP2 proxy forwarding into the container should be enabled."""
 
+    volumes: list[SimpleVolumeBind] | None = None,
+    """Optional volumes to mount into the container host."""
+
     def __init__(
         self,
         image_name: str,
@@ -54,6 +57,7 @@ class ProxiedDockerContainerExtension(Extension):
         command: list[str] | None = None,
         request_to_port_router: Callable[[Request], int] | None = None,
         http2_ports: list[int] | None = None,
+        volumes: list[SimpleVolumeBind] | None = None
     ):
         self.image_name = image_name
         self.container_ports = container_ports
@@ -63,6 +67,7 @@ class ProxiedDockerContainerExtension(Extension):
         self.command = command
         self.request_to_port_router = request_to_port_router
         self.http2_ports = http2_ports
+        self.volumes = volumes
 
     def update_gateway_routes(self, router: http.Router[http.RouteHandler]):
         if self.path:
@@ -106,6 +111,7 @@ class ProxiedDockerContainerExtension(Extension):
                 remove=True,
                 name=container_name,
                 ports=ports,
+                volumes=self.volumes,
                 **kwargs,
             )
         except Exception as e:
