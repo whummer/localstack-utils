@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+# bin/sandbox — manage a LocalStack ephemeral (remote) sandbox instance
+#
+# Usage:
+#   sandbox start   [--name NAME] [--lifetime MINUTES]
+#   sandbox stop    [--name NAME]
+#   sandbox resume  [--name NAME]
+#   sandbox status  [--name NAME]
+#   sandbox url     [--name NAME]
+#
+# Environment variables:
+#   SANDBOX_NAME      Instance name (default: agent-sandbox-<USER>)
+#   SANDBOX_LIFETIME  Lifetime in minutes (default: 60)
+
+import json
+import os
+import subprocess
+import sys
+import time
+import requests
+
+import click
+
+# ── defaults ──────────────────────────────────────────────────────────────────
+DEFAULT_NAME = f"agent-sandbox-{os.environ.get('USER', 'default')}"
+DEFAULT_LIFETIME = 60
+DEFAULT_PROVIDER = "aws"
+PROVIDERS = ("aws", "snowflake", "azure")
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def elapsed(start: float) -> str:
+    secs = int(time.time() - start)
+    if secs < 60:
+        return f"{secs}s"
+    return f"{secs // 60}m{secs % 60}s"
+
+
+def get_instance(name: str) -> dict | None:
+    try:
+        result = subprocess.run(
+            ["localstack", "ephemeral", "list"],
+            capture_output=True, text=True,
+        )
+        instances = json.loads(result.stdout)
+        for inst in instances:
+            if inst.get("instance_name") == name:
+                return inst
+    except Exception:
+        pass
+    return None
+
+
+def get_status(name: str) -> str:
+    inst = get_instance(name)
+    if inst is None:
+        return "absent"
+    return inst.get("status", "unknown")
+
+
+def get_endpoint(name: str) -> str:
+    inst = get_instance(name)
+    if inst is None:
+        return ""
+    return inst.get("endpoint_url", "")
+
+
+def pod_name(name: str, provider: str) -> str:
+    if provider == DEFAULT_PROVIDER:
+        return f"state-{name}"
+    return f"state-{name}-{provider}"
+
+
+def run_create(
+    name: str,
+    lifetime: int,
+    debug: bool,
+    provider: str = DEFAULT_PROVIDER,
+) -> None:
+    pname = pod_name(name, provider)
+    cmd = [
+        "localstack", "ephemeral", "create",
+        "--name", name,
+        "--lifetime", str(lifetime),
+        "-e", "EXTENSION_AUTO_INSTALL=localstack-extension-pod-on-shutdown",
+        "-e", f"AUTO_SAVE_POD={pname}",
+    ]
+    if provider != DEFAULT_PROVIDER:
+        cmd += ["-e", f"PROVIDER={provider}"]
+    if debug:
+        cmd += ["-e", "DEBUG=1", "-e", "LS_LOG=trace"]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, check=True)
+
+
+def _stream_pod_response(resp: requests.Response, action: str) -> None:
+    """Stream and print NDJSON events from a pod save/load response."""
+    for line in resp.iter_lines():
+        if line:
+            try:
+                event = json.loads(line)
+                if event.get("event") == "log":
+                    click.echo(f"  {event['message']}")
+                elif event.get("event") == "error":
+                    raise click.ClickException(f"Pod {action} error: {event.get('message')}")
+            except json.JSONDecodeError:
+                pass
+
+
+def save_pod_state(endpoint: str, pname: str) -> None:
+    """Explicitly save instance state to a Cloud Pod via POST /_localstack/pods/{name}.
+
+    We do this before deleting the instance rather than relying solely on the
+    pod-on-shutdown extension. The extension can produce an incomplete upload
+    (catalog entry exists but data blob is missing), causing the subsequent
+    load to fail with a 404 from the remote storage platform.
+    """
+    click.echo(f"Saving pod '{pname}'...")
+    resp = requests.post(f"{endpoint}/_localstack/pods/{pname}", json={}, stream=True)
+    if not resp.ok:
+        raise click.ClickException(
+            f"Pod save failed: HTTP {resp.status_code} {resp.reason}\n"
+            f"  Body: {resp.text[:300]}"
+        )
+    _stream_pod_response(resp, "save")
+
+
+def load_pod_state(endpoint: str, pname: str) -> None:
+    """Load a Cloud Pod into a running instance via PUT /_localstack/pods/{name}."""
+    click.echo(f"Loading pod '{pname}'...")
+    resp = requests.put(f"{endpoint}/_localstack/pods/{pname}", json={}, stream=True)
+    if not resp.ok:
+        raise click.ClickException(
+            f"Pod load failed: HTTP {resp.status_code} {resp.reason}\n"
+            f"  Body: {resp.text[:300]}"
+        )
+    _stream_pod_response(resp, "load")
+
+
+def wait_for_running(name: str, t0: float, tries: int = 30) -> dict:
+    click.echo("\nWaiting for sandbox to become ready...")
+    inst = None
+    for _ in range(tries):
+        if get_status(name) == "running":
+            inst = get_instance(name)
+            break
+        time.sleep(2)
+    else:
+        raise click.ClickException(
+            f"Sandbox did not reach 'running' state in time after {elapsed(t0)}. "
+            f"Current status: {get_status(name)}"
+        )
+
+    # The ephemeral instance status flips to 'running' before LocalStack's own
+    # HTTP stack is fully initialized. If we attempt to call internal endpoints
+    # (e.g. /_localstack/pods) immediately, the request hits the reverse proxy
+    # before LocalStack is listening and gets a 404. Poll /_localstack/health
+    # to ensure LocalStack itself is ready before returning.
+    endpoint = inst.get("endpoint_url", "")
+    for _ in range(tries):
+        try:
+            resp = requests.get(f"{endpoint}/_localstack/health", timeout=3)
+            if resp.ok:
+                return inst
+        except requests.RequestException:
+            pass
+        time.sleep(2)
+    raise click.ClickException(
+        f"LocalStack did not become healthy in time after {elapsed(t0)}."
+    )
+
+
+# ── shared options ─────────────────────────────────────────────────────────────
+def name_option(f):
+    return click.option(
+        "--name",
+        default=lambda: os.environ.get("SANDBOX_NAME", DEFAULT_NAME),
+        show_default=f"SANDBOX_NAME or {DEFAULT_NAME}",
+        help="Instance name",
+    )(f)
+
+
+def lifetime_option(f):
+    return click.option(
+        "--lifetime",
+        default=lambda: int(os.environ.get("SANDBOX_LIFETIME", DEFAULT_LIFETIME)),
+        show_default=f"SANDBOX_LIFETIME or {DEFAULT_LIFETIME}",
+        type=int,
+        help="Instance lifetime in minutes",
+    )(f)
+
+
+def debug_option(f):
+    return click.option(
+        "--debug",
+        is_flag=True,
+        help="Enable debug mode (sets DEBUG=1 and LS_LOG=trace)",
+    )(f)
+
+
+def provider_option(f):
+    return click.option(
+        "--provider",
+        default=lambda: os.environ.get("SANDBOX_PROVIDER", DEFAULT_PROVIDER),
+        show_default=f"SANDBOX_PROVIDER or {DEFAULT_PROVIDER}",
+        type=click.Choice(PROVIDERS),
+        help="Cloud provider to emulate",
+    )(f)
+
+
+# ── CLI group ─────────────────────────────────────────────────────────────────
+@click.group()
+def cli():
+    """Manage a LocalStack ephemeral (remote) sandbox instance."""
+
+
+# ── commands ──────────────────────────────────────────────────────────────────
+@cli.command()
+@name_option
+@lifetime_option
+@debug_option
+@provider_option
+def start(name, lifetime, debug, provider):
+    """Create and start a new ephemeral sandbox instance."""
+    pname = pod_name(name, provider)
+
+    if get_status(name) == "running":
+        click.echo(f"Sandbox '{name}' is already running.", err=True)
+        _print_url(name)
+        return
+
+    t0 = time.time()
+    debug_label = " [debug mode]" if debug else ""
+    provider_label = f", provider: {provider}" if provider != DEFAULT_PROVIDER else ""
+    click.echo(f"Starting sandbox '{name}' (lifetime: {lifetime}m, pod: {pname}{provider_label}){debug_label}...")
+    run_create(name, lifetime, debug, provider=provider)
+
+    inst = wait_for_running(name, t0)
+    endpoint = inst.get("endpoint_url", "")
+    instance_id = inst.get("id", "")
+    click.echo(f"Sandbox ready [{elapsed(t0)}] — id: {instance_id}")
+    click.echo(f"\n  export AWS_ENDPOINT_URL={endpoint}")
+
+
+@cli.command()
+@name_option
+@provider_option
+def stop(name, provider):
+    """Delete the sandbox (state is auto-saved to a Cloud Pod)."""
+    pname = pod_name(name, provider)
+
+    if get_status(name) == "absent":
+        click.echo(f"Sandbox '{name}' does not exist.", err=True)
+        return
+
+    t0 = time.time()
+    endpoint = get_endpoint(name)
+    click.echo(f"Stopping sandbox '{name}' (saving state to pod '{pname}')...")
+    save_pod_state(endpoint, pname)
+    subprocess.run(["localstack", "ephemeral", "delete", "--name", name], check=True)
+    click.echo(f"Sandbox '{name}' deleted. [{elapsed(t0)}]")
+
+
+@cli.command()
+@name_option
+@lifetime_option
+@debug_option
+@provider_option
+def resume(name, lifetime, debug, provider):
+    """Recreate the sandbox and restore state from the saved Cloud Pod."""
+    pname = pod_name(name, provider)
+
+    if get_status(name) == "running":
+        click.echo(f"Sandbox '{name}' is already running.", err=True)
+        _print_url(name)
+        return
+
+    t0 = time.time()
+    debug_label = " [debug mode]" if debug else ""
+    provider_label = f", provider: {provider}" if provider != DEFAULT_PROVIDER else ""
+    click.echo(f"Resuming sandbox '{name}' from pod '{pname}' (lifetime: {lifetime}m{provider_label}){debug_label}...")
+    run_create(name, lifetime, debug, provider=provider)
+
+    inst = wait_for_running(name, t0)
+    endpoint = inst.get("endpoint_url", "")
+    instance_id = inst.get("id", "")
+
+    # Don't use AUTO_LOAD_POD: it applies the pod during LocalStack's startup
+    # sequence, before individual services (e.g. S3) have finished initializing.
+    # Those services reinitialize their storage paths after the pod is applied,
+    # wiping the restored state. Instead, load the pod explicitly here, after
+    # wait_for_running() has confirmed LocalStack is fully ready.
+    load_pod_state(endpoint, pname)
+
+    click.echo(f"Sandbox ready [{elapsed(t0)}] — id: {instance_id}")
+    click.echo(f"\n  export AWS_ENDPOINT_URL={endpoint}")
+
+
+@cli.command()
+@name_option
+@lifetime_option
+@debug_option
+@provider_option
+def restart(name, lifetime, debug, provider):
+    """Stop and resume the sandbox (saves and restores state)."""
+    pname = pod_name(name, provider)
+
+    if get_status(name) != "absent":
+        t0 = time.time()
+        endpoint = get_endpoint(name)
+        click.echo(f"Stopping sandbox '{name}' (saving state to pod '{pname}')...")
+        save_pod_state(endpoint, pname)
+        subprocess.run(["localstack", "ephemeral", "delete", "--name", name], check=True)
+        click.echo(f"Sandbox '{name}' deleted. [{elapsed(t0)}]")
+
+    debug_label = " [debug mode]" if debug else ""
+    provider_label = f", provider: {provider}" if provider != DEFAULT_PROVIDER else ""
+    click.echo(f"Resuming sandbox '{name}' from pod '{pname}' (lifetime: {lifetime}m{provider_label}){debug_label}...")
+    run_create(name, lifetime, debug, provider=provider)
+
+    t0 = time.time()
+    inst = wait_for_running(name, t0)
+    endpoint = inst.get("endpoint_url", "")
+    instance_id = inst.get("id", "")
+
+    # Same reasoning as resume: load pod explicitly after LocalStack is ready.
+    load_pod_state(endpoint, pname)
+
+    click.echo(f"Sandbox ready [{elapsed(t0)}] — id: {instance_id}")
+    click.echo(f"\n  export AWS_ENDPOINT_URL={endpoint}")
+
+
+@cli.command()
+@name_option
+def status(name):
+    """Show current status and endpoint URL."""
+    inst = get_instance(name)
+    if inst is None:
+        click.echo(f"Sandbox '{name}': absent")
+        return
+
+    click.echo(f"Sandbox '{name}': {inst.get('status', 'unknown')}")
+
+    now = int(time.time())
+    created = inst.get("creation_time")
+    expiry = inst.get("expiry_time")
+    if created:
+        age = now - created
+        m, s = divmod(age, 60)
+        ts = time.strftime("%H:%M:%S", time.localtime(created))
+        click.echo(f"Age:     {m}m{s:02d}s (started at {ts})")
+    if expiry:
+        ttl = expiry - now
+        if ttl > 0:
+            m, s = divmod(ttl, 60)
+            ts = time.strftime("%H:%M:%S", time.localtime(expiry))
+            click.echo(f"Expires: in {m}m{s:02d}s (at {ts})")
+        else:
+            click.echo(f"Expires: overdue by {abs(ttl)}s")
+    endpoint = inst.get("endpoint_url", "")
+    if endpoint:
+        click.echo(f"Endpoint: {endpoint}")
+        click.echo(f"\n  export AWS_ENDPOINT_URL={endpoint}")
+
+
+@cli.command()
+@name_option
+def logs(name):
+    """Fetch logs from the running sandbox instance."""
+    if get_status(name) == "absent":
+        raise click.ClickException(f"Sandbox '{name}' is not running.")
+    subprocess.run(["localstack", "ephemeral", "logs", "--name", name], check=True)
+
+
+@cli.command()
+@name_option
+def reset(name):
+    """Reset all state in the running sandbox instance."""
+    endpoint = get_endpoint(name)
+    if not endpoint:
+        raise click.ClickException(f"Sandbox '{name}' is not running.")
+
+    click.echo(f"Resetting sandbox '{name}'...")
+    resp = requests.post(f"{endpoint}/_localstack/state/reset")
+    if not resp.ok:
+        raise click.ClickException(f"Reset failed: HTTP {resp.status_code} {resp.reason}")
+    click.echo("Sandbox state reset.")
+
+
+@cli.command()
+@name_option
+def url(name):
+    """Print the endpoint URL (useful for scripting)."""
+    _print_url(name)
+
+
+def _print_url(name: str) -> None:
+    endpoint = get_endpoint(name)
+    if not endpoint:
+        raise click.ClickException(f"Sandbox '{name}' is not running.")
+    click.echo(f"Endpoint URL: {endpoint}")
+    click.echo(f"\n  export AWS_ENDPOINT_URL={endpoint}")
+
+
+if __name__ == "__main__":
+    cli()
