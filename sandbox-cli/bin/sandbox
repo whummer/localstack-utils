@@ -6,7 +6,7 @@
 #   sandbox stop    [--name NAME]
 #   sandbox resume  [--name NAME]
 #   sandbox status  [--name NAME]
-#   sandbox url     [--name NAME]
+#   sandbox url     [--name NAME] [--raw]
 #
 # Environment variables:
 #   SANDBOX_NAME      Instance name (default: agent-sandbox-<USER>)
@@ -388,15 +388,19 @@ def reset(name):
 
 @cli.command()
 @name_option
-def url(name):
+@click.option("--raw", is_flag=True, help="Print only the bare URL (machine-readable)")
+def url(name, raw):
     """Print the endpoint URL (useful for scripting)."""
-    _print_url(name)
+    _print_url(name, raw=raw)
 
 
-def _print_url(name: str) -> None:
+def _print_url(name: str, raw: bool = False) -> None:
     endpoint = get_endpoint(name)
     if not endpoint:
         raise click.ClickException(f"Sandbox '{name}' is not running.")
+    if raw:
+        click.echo(endpoint)
+        return
     click.echo(f"Endpoint URL: {endpoint}")
     click.echo(f"\n  export AWS_ENDPOINT_URL={endpoint}")
 
