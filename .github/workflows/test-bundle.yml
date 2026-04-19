@@ -1,17 +1,24 @@
 name: Bundle Test
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'cli-extensions/bundle-test/**'
+      - 'cli-extensions/bin/ls-bundle'
+      - '.github/workflows/test-bundle.yml'
   push:
     branches:
       - main
     paths:
-      - 'bundle-test/**'
+      - 'cli-extensions/bundle-test/**'
       - 'cli-extensions/bin/ls-bundle'
       - '.github/workflows/test-bundle.yml'
   workflow_dispatch:
 
 env:
-  LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_AUTH_TOKEN }}
+  LOCALSTACK_AUTH_TOKEN: ${{ secrets.BUNDLE_LOCALSTACK_AUTH_TOKEN }}
   LOCALSTACK_DISABLE_EVENTS: "1"
 
 jobs:
@@ -36,7 +43,7 @@ jobs:
 
       - name: Deploy infrastructure via tflocal
         run: |
-          cd bundle-test/infra
+          cd cli-extensions/bundle-test
           tflocal init -input=false
           tflocal apply -auto-approve -input=false
 
