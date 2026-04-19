@@ -1,6 +1,13 @@
 name: Bundle Test
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'cli-extensions/bundle-test/**'
+      - 'cli-extensions/bin/ls-bundle'
+      - '.github/workflows/test-bundle.yml'
   push:
     branches:
       - main
