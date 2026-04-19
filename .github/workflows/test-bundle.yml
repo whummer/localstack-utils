@@ -36,7 +36,7 @@ jobs:
 
       - name: Deploy infrastructure via tflocal
         run: |
-          cd cli-extensions/bundle-test/infra
+          cd cli-extensions/bundle-test
           tflocal init -input=false
           tflocal apply -auto-approve -input=false
 
