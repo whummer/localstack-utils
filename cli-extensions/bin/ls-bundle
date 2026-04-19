@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+# bin/ls-bundle — create and submit proof bundles for CI audit trails
+#
+# Usage:
+#   ls-bundle submit [--project NAME] [--endpoint URL] [--pod-name NAME]
+#                    [--message TEXT] [--meta KEY=VALUE...]
+#
+# Environment variables:
+#   BUNDLE_PROJECT        Project name (required if --project not given)
+#   BUNDLE_ENDPOINT       Base URL for the proof-bundles API
+#   LOCALSTACK_AUTH_TOKEN Auth token (falls back to `localstack auth show-token --plain`)
+
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+import click
+import requests
+
+# ── defaults ──────────────────────────────────────────────────────────────────
+# TODO: to be changed over time ...
+DEFAULT_ENDPOINT = "https://diugcvbtff.execute-api.eu-central-1.amazonaws.com/v1"
+INGEST_PATH = "/proof-bundles/ingest"
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def get_auth_token() -> str:
+    token = os.environ.get("LOCALSTACK_AUTH_TOKEN")
+    if token:
+        return token
+    result = subprocess.run(
+        ["localstack", "auth", "show-token", "--plain"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        token = result.stdout.strip()
+        if token:
+            return token
+    raise click.ClickException(
+        "No LocalStack auth token found. Set LOCALSTACK_AUTH_TOKEN or run "
+        "`localstack auth set-token <token>`."
+    )
+
+
+def slugify(value: str) -> str:
+    """Convert a string to a safe pod-name component (lowercase, hyphens)."""
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-")
+
+
+def bundle_pod_name(project: str) -> str:
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"proof-bundle-{slugify(project)}-{ts}"
+
+
+def save_cloud_pod(pod_name: str, ls_endpoint: str | None) -> dict:
+    """Save current LocalStack state to a Cloud Pod. Returns pod metadata."""
+    if ls_endpoint:
+        # Save to a running LocalStack instance endpoint directly
+        click.echo(f"Saving Cloud Pod '{pod_name}' via {ls_endpoint}...")
+        resp = requests.post(
+            f"{ls_endpoint}/_localstack/pods/{pod_name}",
+            json={},
+            stream=True,
+        )
+        if not resp.ok:
+            raise click.ClickException(
+                f"Pod save failed: HTTP {resp.status_code} {resp.reason}\n"
+                f"  Body: {resp.text[:300]}"
+            )
+        for line in resp.iter_lines():
+            if line:
+                try:
+                    event = json.loads(line)
+                    if event.get("event") == "log":
+                        click.echo(f"  {event['message']}")
+                    elif event.get("event") == "error":
+                        raise click.ClickException(f"Pod save error: {event.get('message')}")
+                except json.JSONDecodeError:
+                    pass
+    else:
+        # Save via localstack CLI (local instance)
+        click.echo(f"Saving Cloud Pod '{pod_name}' via localstack CLI...")
+        result = subprocess.run(
+            ["localstack", "pod", "save", pod_name],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise click.ClickException(
+                f"Pod save failed (exit {result.returncode}): "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        if result.stdout.strip():
+            click.echo(result.stdout.strip())
+
+    return {"name": pod_name}
+
+
+def delete_cloud_pod(pod_name: str) -> None:
+    """Delete a Cloud Pod by name (best-effort cleanup on submission failure)."""
+    click.echo(f"Cleaning up Cloud Pod '{pod_name}'...", err=True)
+    result = subprocess.run(
+        ["localstack", "pod", "delete", pod_name],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        click.echo(
+            f"Warning: pod cleanup failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}",
+            err=True,
+        )
+
+
+def git_context() -> dict:
+    """Collect git context (repo, branch, commit, author) if available."""
+    ctx = {}
+    for key, cmd in [
+        ("commit", ["git", "rev-parse", "HEAD"]),
+        ("branch", ["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+        ("repo", ["git", "remote", "get-url", "origin"]),
+        ("author", ["git", "log", "-1", "--format=%an <%ae>"]),
+        ("message", ["git", "log", "-1", "--format=%s"]),
+    ]:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip():
+                ctx[key] = r.stdout.strip()
+        except FileNotFoundError:
+            break
+    return ctx
+
+
+def ci_context() -> dict:
+    """Collect CI environment metadata if running in a CI pipeline."""
+    ctx = {}
+    ci_vars = {
+        "ci": "CI",
+        "pipeline_url": "CI_PIPELINE_URL",         # GitLab
+        "job_url": "CI_JOB_URL",                   # GitLab
+        "run_url": "GITHUB_SERVER_URL",             # GitHub Actions (combined below)
+        "workflow": "GITHUB_WORKFLOW",
+        "run_id": "GITHUB_RUN_ID",
+        "actor": "GITHUB_ACTOR",
+        "repository": "GITHUB_REPOSITORY",
+        "build_url": "BUILD_URL",                   # Jenkins
+        "travis_build": "TRAVIS_BUILD_WEB_URL",     # Travis
+    }
+    for field, var in ci_vars.items():
+        val = os.environ.get(var)
+        if val:
+            ctx[field] = val
+    # Build a GitHub Actions run URL if available
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if server and repo and run_id:
+        ctx["run_url"] = f"{server}/{repo}/actions/runs/{run_id}"
+    return ctx
+
+
+# ── CLI group ─────────────────────────────────────────────────────────────────
+@click.group()
+def cli():
+    """Create and submit proof bundles for AI-assisted CI audit trails."""
+
+
+# ── submit command ─────────────────────────────────────────────────────────────
+@cli.command()
+@click.option(
+    "--project",
+    default=lambda: os.environ.get("BUNDLE_PROJECT") or None,
+    show_default="BUNDLE_PROJECT env var",
+    help="Unique project name for this proof bundle (env: BUNDLE_PROJECT)",
+)
+@click.option(
+    "--endpoint",
+    default=lambda: os.environ.get("BUNDLE_ENDPOINT", DEFAULT_ENDPOINT),
+    show_default=f"BUNDLE_ENDPOINT or {DEFAULT_ENDPOINT}",
+    help="Base URL of the proof-bundles API (env: BUNDLE_ENDPOINT)",
+)
+@click.option(
+    "--pod-name",
+    default=None,
+    help="Override the Cloud Pod name (default: auto-generated from project + timestamp)",
+)
+@click.option(
+    "--ls-endpoint",
+    default=lambda: os.environ.get("AWS_ENDPOINT_URL", ""),
+    help="LocalStack endpoint URL for direct pod save (env: AWS_ENDPOINT_URL). "
+         "If not set, uses the localstack CLI.",
+)
+@click.option(
+    "--summary",
+    default="",
+    help="Human-readable summary of this bundle / change",
+)
+@click.option(
+    "--status",
+    default="pass",
+    type=click.Choice(["pass", "fail"]),
+    show_default=True,
+    help="Overall status of the CI run",
+)
+@click.option(
+    "--assertion",
+    multiple=True,
+    metavar="NAME=pass|fail",
+    help="Assertion result (repeatable), e.g. --assertion 'Unit tests=pass'",
+)
+@click.option(
+    "--meta",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="Additional metadata key=value pairs (repeatable)",
+)
+@click.option(
+    "--skip-pod",
+    is_flag=True,
+    help="Skip Cloud Pod creation (submit bundle entry only)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print the payload that would be submitted without sending it",
+)
+def submit(project, endpoint, pod_name, ls_endpoint, summary, status, assertion, meta, skip_pod, dry_run):
+    """Submit a proof bundle: save a Cloud Pod snapshot and record it in the registry."""
+    if not project:
+        raise click.UsageError("Missing required parameter: --project (or set BUNDLE_PROJECT)")
+
+    t0 = time.time()
+
+    # Resolve pod name
+    pname = pod_name or bundle_pod_name(project)
+
+    if dry_run or skip_pod:
+        pod_created = False
+    else:
+        save_cloud_pod(pname, ls_endpoint or None)
+        pod_created = True
+
+    # Parse assertions: "Name=pass" or "Name=fail"
+    assertions = []
+    for a in assertion:
+        if "=" in a:
+            name, result = a.split("=", 1)
+            passed = result.strip().lower() not in ("fail", "false", "0")
+            assertions.append({"name": name.strip(), "passed": passed})
+        else:
+            raise click.ClickException(f"--assertion must be NAME=pass|fail, got: {a!r}")
+
+    # Resolve git / CI fields, preferring explicit env vars then git CLI
+    git = git_context()
+    ci = ci_context()
+    commit_sha = (
+        os.environ.get("GITHUB_SHA")
+        or git.get("commit", "")
+    )
+    branch = (
+        os.environ.get("GITHUB_REF_NAME")
+        or os.environ.get("CI_COMMIT_REF_NAME")  # GitLab
+        or git.get("branch", "")
+    )
+    workflow_name = (
+        os.environ.get("GITHUB_WORKFLOW")
+        or os.environ.get("CI_PIPELINE_NAME")     # GitLab
+        or ci.get("workflow", "")
+    )
+
+    extra_meta = {}
+    for kv in meta:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            extra_meta[k.strip()] = v.strip()
+        else:
+            raise click.ClickException(f"--meta value must be KEY=VALUE, got: {kv!r}")
+
+    payload = {
+        "project": project,
+        "cloudPod": pname,
+        "commitSha": commit_sha,
+        "branch": branch,
+        "workflowName": workflow_name,
+        "status": status,
+        "summary": summary,
+        "assertions": assertions,
+        "meta": extra_meta,
+    }
+
+    if dry_run:
+        click.echo("Dry run — payload that would be submitted:")
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    # Submit to the proof-bundles endpoint
+    token = get_auth_token()
+    url = endpoint.rstrip("/") + INGEST_PATH
+    click.echo(f"Submitting proof bundle to {url}...")
+
+    try:
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+
+        if not resp.ok:
+            raise click.ClickException(
+                f"Proof bundle submission failed: HTTP {resp.status_code} {resp.reason}\n"
+                f"  Body: {resp.text[:400]}"
+            )
+    except Exception:
+        if pod_created:
+            delete_cloud_pod(pname)
+        raise
+
+    secs = time.time() - t0
+    try:
+        result = resp.json()
+        bundle_id = result.get("id") or result.get("bundle_id") or "(unknown)"
+        click.echo(f"Proof bundle submitted [{secs:.1f}s] — id: {bundle_id}")
+        click.echo(f"  project: {project}")
+        click.echo(f"  pod:     {pname}")
+    except Exception:
+        click.echo(f"Proof bundle submitted [{secs:.1f}s]")
+        click.echo(resp.text[:300])
+
+
+if __name__ == "__main__":
+    cli()
