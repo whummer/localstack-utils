@@ -1,0 +1,60 @@
+name: Bundle Test
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'bundle-test/**'
+      - 'cli-extensions/bin/ls-bundle'
+      - '.github/workflows/test-bundle.yml'
+  workflow_dispatch:
+
+env:
+  LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_AUTH_TOKEN }}
+  LOCALSTACK_DISABLE_EVENTS: "1"
+
+jobs:
+  bundle-test:
+    name: Deploy infra and submit proof bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install localstack awscli-local terraform-local
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Start LocalStack
+        run: |
+          localstack start -d
+          localstack wait
+
+      - name: Deploy infrastructure via tflocal
+        run: |
+          cd bundle-test/infra
+          tflocal init -input=false
+          tflocal apply -auto-approve -input=false
+
+      - name: Verify resources
+        run: |
+          awslocal s3 ls | grep bundle-test-artifacts
+          awslocal sqs list-queues | grep bundle-test-events
+          awslocal ssm get-parameter --name /bundle-test/version --query Parameter.Value --output text
+
+      - name: Submit proof bundle
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/whummer/localstack-utils/refs/heads/main/cli-extensions/bin/ls-bundle" -o ls-bundle && chmod +x ls-bundle
+          ./ls-bundle submit --project test-whu1 \
+            --summary "Terraform infra deployed and verified" \
+            --assertion "S3 bucket created=pass" \
+            --assertion "SQS queue created=pass" \
+            --assertion "SSM parameter created=pass"
+
+      - name: Print LocalStack logs
+        if: always()
+        run: localstack logs
