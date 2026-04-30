@@ -50,17 +50,26 @@ jobs:
       - name: Verify resources
         run: |
           awslocal s3 ls | grep bundle-test-artifacts
+          awslocal s3 ls | grep bundle-test-logs
           awslocal sqs list-queues | grep bundle-test-events
+          awslocal sqs list-queues | grep bundle-test-events-dlq
           awslocal ssm get-parameter --name /bundle-test/version --query Parameter.Value --output text
+          awslocal ssm get-parameter --name /bundle-test/config --with-decryption --query Parameter.Value --output text
+          awslocal dynamodb describe-table --table-name bundle-test-jobs --query Table.TableStatus --output text
+          awslocal lambda get-function --function-name bundle-test-processor --query Configuration.State --output text
+          awslocal iam get-role --role-name bundle-test-lambda-exec --query Role.RoleName --output text
 
       - name: Submit proof bundle
         run: |
           curl -fsSL "https://raw.githubusercontent.com/whummer/localstack-utils/refs/heads/main/cli-extensions/bin/ls-bundle" -o ls-bundle && chmod +x ls-bundle
           ./ls-bundle submit --project test-whu1 \
             --summary "Terraform infra deployed and verified" \
-            --assertion "S3 bucket created=pass" \
-            --assertion "SQS queue created=pass" \
-            --assertion "SSM parameter created=pass"
+            --assertion "S3 buckets created=pass" \
+            --assertion "SQS queue + DLQ created=pass" \
+            --assertion "SSM parameters created=pass" \
+            --assertion "DynamoDB table created=pass" \
+            --assertion "Lambda function deployed=pass" \
+            --assertion "IAM role and policies created=pass"
 
       - name: Print LocalStack logs
         if: always()
