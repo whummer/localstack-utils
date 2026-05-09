@@ -45,8 +45,9 @@ spec:
         app: localstack
     spec:
       serviceAccountName: localstack
-      # Writes a kubeconfig with the actual token + CA embedded so LocalStack's
-      # k8s client connects to kubernetes.default.svc instead of localhost:80.
+      # Writes a kubeconfig pointing to kubernetes.default.svc so LocalStack's
+      # k8s client doesn't fall back to localhost:80.
+      # Uses certificate-authority file path (avoids base64 portability issues).
       initContainers:
         - name: gen-kubeconfig
           image: busybox
@@ -54,8 +55,8 @@ spec:
             - sh
             - -c
             - |
+              set -e
               TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-              CA=$(base64 /var/run/secrets/kubernetes.io/serviceaccount/ca.crt | tr -d '\n')
               cat > /kube/config <<EOF
               apiVersion: v1
               kind: Config
@@ -63,7 +64,7 @@ spec:
               - name: in-cluster
                 cluster:
                   server: https://kubernetes.default.svc:443
-                  certificate-authority-data: ${CA}
+                  certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
               users:
               - name: localstack
                 user:
@@ -76,6 +77,8 @@ spec:
                   namespace: localstack
               current-context: in-cluster
               EOF
+              echo "kubeconfig written:"
+              cat /kube/config
           volumeMounts:
             - name: kubeconfig
               mountPath: /kube

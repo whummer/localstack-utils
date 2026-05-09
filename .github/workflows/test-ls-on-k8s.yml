@@ -41,6 +41,17 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Debug LocalStack pod k8s setup
+        run: |
+          PODNAME=$(kubectl --context k3d-ls-k8s-cluster -n localstack get pod -l app=localstack -o jsonpath='{.items[0].metadata.name}')
+          echo "Pod: $PODNAME"
+          echo "--- env ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack exec "$PODNAME" -- env | grep -E 'KUBERNETES|KUBECONFIG|LAMBDA' | sort
+          echo "--- /kube/config ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack exec "$PODNAME" -- cat /kube/config 2>/dev/null || echo "(not found)"
+          echo "--- serviceaccount files ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack exec "$PODNAME" -- ls /var/run/secrets/kubernetes.io/serviceaccount/ 2>/dev/null || echo "(not found)"
+
       - name: Run Lambda integration tests
         run: make test
 
