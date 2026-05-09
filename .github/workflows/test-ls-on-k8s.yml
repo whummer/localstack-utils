@@ -1,0 +1,72 @@
+name: LocalStack on Kubernetes
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ls-on-k8s/**'
+      - '.github/workflows/test-ls-on-k8s.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ls-on-k8s/**'
+      - '.github/workflows/test-ls-on-k8s.yml'
+  workflow_dispatch:
+
+env:
+  LOCALSTACK_AUTH_TOKEN: ${{ secrets.K8S_LOCALSTACK_AUTH_TOKEN }}
+  LOCALSTACK_DISABLE_EVENTS: "1"
+
+jobs:
+  test-ls-on-k8s:
+    name: k3d + LocalStack + Lambda pod executor
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ls-on-k8s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Spin up cluster and deploy LocalStack
+        run: make cluster-up
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Debug LocalStack pod k8s setup
+        run: |
+          PODNAME=$(kubectl --context k3d-ls-k8s-cluster -n localstack get pod -l app=localstack -o jsonpath='{.items[0].metadata.name}')
+          echo "Pod: $PODNAME"
+          echo "--- env ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack exec "$PODNAME" -- env | grep -E 'KUBERNETES|KUBECONFIG|LAMBDA' | sort
+          echo "--- /kube/config ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack exec "$PODNAME" -- cat /kube/config 2>/dev/null || echo "(not found)"
+          echo "--- serviceaccount files ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack exec "$PODNAME" -- ls /var/run/secrets/kubernetes.io/serviceaccount/ 2>/dev/null || echo "(not found)"
+
+      - name: Run Lambda integration tests
+        run: make test
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          make logs 2>/dev/null || true
+          make pods 2>/dev/null || true
+          echo "--- lambda pod logs ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack get pods | grep lambda || true
+          for pod in $(kubectl --context k3d-ls-k8s-cluster -n localstack get pods -o name | grep lambda); do
+            echo "=== $pod ==="
+            kubectl --context k3d-ls-k8s-cluster -n localstack logs $pod --all-containers 2>/dev/null || true
+          done
+
+      - name: Tear down cluster
+        if: always()
+        run: make cluster-down
