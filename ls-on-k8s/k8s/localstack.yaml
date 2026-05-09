@@ -45,43 +45,6 @@ spec:
         app: localstack
     spec:
       serviceAccountName: localstack
-      # Writes a kubeconfig pointing to kubernetes.default.svc so LocalStack's
-      # k8s client doesn't fall back to localhost:80.
-      # Uses certificate-authority file path (avoids base64 portability issues).
-      initContainers:
-        - name: gen-kubeconfig
-          image: busybox
-          command:
-            - sh
-            - -c
-            - |
-              set -e
-              TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-              cat > /kube/config <<EOF
-              apiVersion: v1
-              kind: Config
-              clusters:
-              - name: in-cluster
-                cluster:
-                  server: https://kubernetes.default.svc:443
-                  certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-              users:
-              - name: localstack
-                user:
-                  token: ${TOKEN}
-              contexts:
-              - name: in-cluster
-                context:
-                  cluster: in-cluster
-                  user: localstack
-                  namespace: localstack
-              current-context: in-cluster
-              EOF
-              echo "kubeconfig written:"
-              cat /kube/config
-          volumeMounts:
-            - name: kubeconfig
-              mountPath: /kube
       containers:
         - name: localstack
           image: localstack/localstack:latest
@@ -97,8 +60,6 @@ spec:
               value: localstack
             - name: LAMBDA_K8S_IMAGE_PREFIX
               value: localstack/lambda-
-            - name: KUBECONFIG
-              value: /kube/config
             - name: LOCALSTACK_DISABLE_EVENTS
               value: "1"
             - name: LOCALSTACK_AUTH_TOKEN
@@ -107,9 +68,6 @@ spec:
                   name: localstack-auth
                   key: token
                   optional: true
-          volumeMounts:
-            - name: kubeconfig
-              mountPath: /kube
           readinessProbe:
             httpGet:
               path: /_localstack/health
@@ -117,9 +75,6 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 5
             failureThreshold: 24
-      volumes:
-        - name: kubeconfig
-          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
