@@ -55,11 +55,17 @@ jobs:
       - name: Run Lambda integration tests
         run: make test
 
-      - name: Dump LocalStack logs on failure
+      - name: Dump logs on failure
         if: failure()
         run: |
           make logs 2>/dev/null || true
           make pods 2>/dev/null || true
+          echo "--- lambda pod logs ---"
+          kubectl --context k3d-ls-k8s-cluster -n localstack get pods | grep lambda || true
+          for pod in $(kubectl --context k3d-ls-k8s-cluster -n localstack get pods -o name | grep lambda); do
+            echo "=== $pod ==="
+            kubectl --context k3d-ls-k8s-cluster -n localstack logs $pod --all-containers 2>/dev/null || true
+          done
 
       - name: Tear down cluster
         if: always()
