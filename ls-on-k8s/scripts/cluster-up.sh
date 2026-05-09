@@ -5,7 +5,6 @@ CLUSTER="${1:-ls-k8s-cluster}"
 NODE_PORT="${2:-31566}"
 HOST_PORT="${3:-4566}"
 NAMESPACE="localstack"
-RELEASE="localstack"
 CONTEXT="k3d-${CLUSTER}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -14,7 +13,7 @@ if k3d cluster list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "${CLUSTER}"; 
   echo "    Cluster '${CLUSTER}' already exists – skipping creation."
 else
   k3d cluster create "${CLUSTER}" \
-    --port "${HOST_PORT}:${NODE_PORT}@server[0]" \
+    --port "${HOST_PORT}:${NODE_PORT}@server:0" \
     --wait
 fi
 
@@ -22,17 +21,20 @@ echo "==> Ensuring namespace '${NAMESPACE}'..."
 kubectl --context "${CONTEXT}" create namespace "${NAMESPACE}" \
   --dry-run=client -o yaml | kubectl --context "${CONTEXT}" apply -f -
 
-echo "==> Adding/updating LocalStack Helm repo..."
-helm repo add localstack https://localstack.github.io/helm-charts 2>/dev/null || true
-helm repo update localstack 2>/dev/null
+if [[ -n "${LOCALSTACK_AUTH_TOKEN:-}" ]]; then
+  echo "==> Creating auth token secret..."
+  kubectl --context "${CONTEXT}" create secret generic localstack-auth \
+    --namespace "${NAMESPACE}" \
+    --from-literal=token="${LOCALSTACK_AUTH_TOKEN}" \
+    --dry-run=client -o yaml | kubectl --context "${CONTEXT}" apply -f -
+fi
 
-echo "==> Deploying LocalStack via Helm..."
-helm upgrade --install "${RELEASE}" localstack/localstack \
-  --kube-context "${CONTEXT}" \
-  --namespace "${NAMESPACE}" \
-  --values "${SCRIPT_DIR}/../k8s/values.yaml" \
-  --wait \
-  --timeout 180s
+echo "==> Deploying LocalStack..."
+kubectl --context "${CONTEXT}" apply -f "${SCRIPT_DIR}/../k8s/localstack.yaml"
+
+echo "==> Waiting for LocalStack to be ready..."
+kubectl --context "${CONTEXT}" rollout status deployment/localstack \
+  --namespace "${NAMESPACE}" --timeout=180s
 
 echo "==> Waiting for LocalStack health endpoint on localhost:${HOST_PORT}..."
 for i in $(seq 1 60); do

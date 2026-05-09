@@ -18,13 +18,10 @@ cluster-up: ## Create k3d cluster and deploy LocalStack with Kubernetes Lambda e
 cluster-down: ## Tear down the k3d cluster
 	@bash scripts/cluster-down.sh $(CLUSTER)
 
-deploy-ls: ## Re-deploy / upgrade LocalStack (cluster must already be running)
-	helm repo update localstack
-	helm upgrade --install $(RELEASE) localstack/localstack \
-	  --kube-context $(CONTEXT) \
-	  --namespace $(NAMESPACE) \
-	  --values k8s/values.yaml \
-	  --wait --timeout 180s
+deploy-ls: ## Re-deploy LocalStack (cluster must already be running)
+	kubectl --context $(CONTEXT) apply -f k8s/localstack.yaml
+	kubectl --context $(CONTEXT) rollout status deployment/$(RELEASE) \
+	  --namespace $(NAMESPACE) --timeout=180s
 
 $(VENV):
 	python3 -m venv $(VENV)
@@ -33,7 +30,10 @@ $(VENV):
 test: $(VENV) ## Run Lambda-on-Kubernetes integration tests
 	$(VENV)/bin/pytest tests/ -v -s
 
-logs: ## Tail LocalStack pod logs
+logs: ## Dump LocalStack pod logs
+	kubectl --context $(CONTEXT) -n $(NAMESPACE) logs deploy/$(RELEASE) --tail=200
+
+logs-follow: ## Tail LocalStack pod logs (interactive)
 	kubectl --context $(CONTEXT) -n $(NAMESPACE) logs -f deploy/$(RELEASE)
 
 pods: ## List all pods in the LocalStack namespace

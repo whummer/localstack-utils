@@ -1,0 +1,55 @@
+name: LocalStack on Kubernetes
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ls-on-k8s/**'
+      - '.github/workflows/test-ls-on-k8s.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ls-on-k8s/**'
+      - '.github/workflows/test-ls-on-k8s.yml'
+  workflow_dispatch:
+
+env:
+  LOCALSTACK_AUTH_TOKEN: ${{ secrets.K8S_LOCALSTACK_AUTH_TOKEN }}
+  LOCALSTACK_DISABLE_EVENTS: "1"
+
+jobs:
+  test-ls-on-k8s:
+    name: k3d + LocalStack + Lambda pod executor
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ls-on-k8s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Spin up cluster and deploy LocalStack
+        run: make cluster-up
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Lambda integration tests
+        run: make test
+
+      - name: Dump LocalStack logs on failure
+        if: failure()
+        run: |
+          make logs 2>/dev/null || true
+          make pods 2>/dev/null || true
+
+      - name: Tear down cluster
+        if: always()
+        run: make cluster-down
