@@ -9,8 +9,10 @@
 #   sandbox url     [--name NAME] [--raw]
 #
 # Environment variables:
-#   SANDBOX_NAME      Instance name (default: agent-sandbox-<USER>)
-#   SANDBOX_LIFETIME  Lifetime in minutes (default: 60)
+#   SANDBOX_NAME           Instance name (default: agent-sandbox-<USER>)
+#   SANDBOX_LIFETIME       Lifetime in minutes (default: 60)
+#   LOCALSTACK_ANALYTICS_API / ANALYTICS_API
+#                          Analytics API endpoint forwarded to the container as ANALYTICS_API
 
 import json
 import os
@@ -36,18 +38,37 @@ def elapsed(start: float) -> str:
     return f"{secs // 60}m{secs % 60}s"
 
 
-def get_instance(name: str) -> dict | None:
-    try:
-        result = subprocess.run(
-            ["localstack", "ephemeral", "list"],
-            capture_output=True, text=True,
-        )
-        instances = json.loads(result.stdout)
-        for inst in instances:
-            if inst.get("instance_name") == name:
+def get_instance(name: str, debug: bool = False) -> dict | None:
+    # Use `describe` (single-instance GET) for live state; non-zero exit = gone.
+    result = subprocess.run(
+        ["localstack", "ephemeral", "describe", "--name", name],
+        capture_output=True, text=True,
+    )
+    if debug:
+        click.echo(f"  [get_instance/describe] exit={result.returncode} stdout={result.stdout.strip()!r} stderr={result.stderr.strip()!r}", err=True)
+    if result.returncode == 0 and result.stdout.strip():
+        try:
+            inst = json.loads(result.stdout)
+            if isinstance(inst, dict) and inst:
                 return inst
-    except Exception:
-        pass
+        except json.JSONDecodeError:
+            pass
+    if result.returncode != 0:
+        # Non-zero from describe means 404 (gone) or auth error.
+        # Fall back to list to distinguish "not found" from "CLI error".
+        try:
+            list_result = subprocess.run(
+                ["localstack", "ephemeral", "list"],
+                capture_output=True, text=True,
+            )
+            if debug:
+                click.echo(f"  [get_instance/list] exit={list_result.returncode} stdout={list_result.stdout.strip()!r}", err=True)
+            instances = json.loads(list_result.stdout)
+            for inst in instances:
+                if inst.get("instance_name") == name:
+                    return inst
+        except Exception:
+            pass
     return None
 
 
@@ -87,6 +108,9 @@ def run_create(
     ]
     if provider != DEFAULT_PROVIDER:
         cmd += ["-e", f"PROVIDER={provider}"]
+    analytics_api = os.environ.get("LOCALSTACK_ANALYTICS_API") or os.environ.get("ANALYTICS_API")
+    if analytics_api:
+        cmd += ["-e", f"ANALYTICS_API={analytics_api}"]
     if debug:
         cmd += ["-e", "DEBUG=1", "-e", "LS_LOG=trace"]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, check=True)
@@ -134,6 +158,24 @@ def load_pod_state(endpoint: str, pname: str) -> None:
             f"  Body: {resp.text[:300]}"
         )
     _stream_pod_response(resp, "load")
+
+
+def run_delete(name: str) -> None:
+    """Delete an instance and wait until it is fully gone (polls describe until 404)."""
+    cmd = ["localstack", "ephemeral", "delete", "--name", name, "--wait"]
+    click.echo(f"  Running: {' '.join(cmd)}", err=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.stdout.strip():
+        click.echo(f"  stdout: {result.stdout.strip()}", err=True)
+    if result.stderr.strip():
+        click.echo(f"  stderr: {result.stderr.strip()}", err=True)
+    click.echo(f"  exit code: {result.returncode}", err=True)
+    if result.returncode != 0:
+        output = result.stderr.strip() or result.stdout.strip()
+        if "404" in output or "Not Found" in output:
+            click.echo("  Instance already gone (404) — treating as deleted.", err=True)
+            return
+        raise click.ClickException(f"Delete command failed (exit {result.returncode}): {output}")
 
 
 def wait_for_running(name: str, t0: float, tries: int = 30) -> dict:
@@ -186,6 +228,15 @@ def lifetime_option(f):
         show_default=f"SANDBOX_LIFETIME or {DEFAULT_LIFETIME}",
         type=int,
         help="Instance lifetime in minutes",
+    )(f)
+
+
+
+def force_option(f):
+    return click.option(
+        "--force",
+        is_flag=True,
+        help="Skip pod state save and delete the instance immediately",
     )(f)
 
 
@@ -244,7 +295,8 @@ def start(name, lifetime, debug, provider):
 @cli.command()
 @name_option
 @provider_option
-def stop(name, provider):
+@force_option
+def stop(name, provider, force):
     """Delete the sandbox (state is auto-saved to a Cloud Pod)."""
     pname = pod_name(name, provider)
 
@@ -253,10 +305,13 @@ def stop(name, provider):
         return
 
     t0 = time.time()
-    endpoint = get_endpoint(name)
-    click.echo(f"Stopping sandbox '{name}' (saving state to pod '{pname}')...")
-    save_pod_state(endpoint, pname)
-    subprocess.run(["localstack", "ephemeral", "delete", "--name", name], check=True)
+    if force:
+        click.echo(f"Force-stopping sandbox '{name}' (skipping pod save)...")
+    else:
+        endpoint = get_endpoint(name)
+        click.echo(f"Stopping sandbox '{name}' (saving state to pod '{pname}')...")
+        save_pod_state(endpoint, pname)
+    run_delete(name)
     click.echo(f"Sandbox '{name}' deleted. [{elapsed(t0)}]")
 
 
@@ -300,16 +355,20 @@ def resume(name, lifetime, debug, provider):
 @lifetime_option
 @debug_option
 @provider_option
-def restart(name, lifetime, debug, provider):
+@force_option
+def restart(name, lifetime, debug, provider, force):
     """Stop and resume the sandbox (saves and restores state)."""
     pname = pod_name(name, provider)
 
     if get_status(name) != "absent":
         t0 = time.time()
-        endpoint = get_endpoint(name)
-        click.echo(f"Stopping sandbox '{name}' (saving state to pod '{pname}')...")
-        save_pod_state(endpoint, pname)
-        subprocess.run(["localstack", "ephemeral", "delete", "--name", name], check=True)
+        if force:
+            click.echo(f"Force-stopping sandbox '{name}' (skipping pod save)...")
+        else:
+            endpoint = get_endpoint(name)
+            click.echo(f"Stopping sandbox '{name}' (saving state to pod '{pname}')...")
+            save_pod_state(endpoint, pname)
+        run_delete(name)
         click.echo(f"Sandbox '{name}' deleted. [{elapsed(t0)}]")
 
     debug_label = " [debug mode]" if debug else ""
