@@ -1,0 +1,13 @@
+# Proxy all DynamoDB requests from LocalStack to real AWS.
+# When active, your local Lambda's DynamoDB calls are transparently forwarded
+# to your AWS account, so the local app reads/writes upstream data.
+#
+# To scope the proxy to a specific table only, replace the block below with:
+#
+#   services:
+#     dynamodb:
+#       resources:
+#         - '.*:product-catalog-products'
+#
+services:
+  dynamodb: {}
