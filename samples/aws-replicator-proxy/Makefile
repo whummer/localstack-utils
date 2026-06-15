@@ -1,8 +1,12 @@
-AWS_REGION    ?= us-east-1
+AWS_REGION    ?= eu-central-1
+export AWS_DEFAULT_REGION = $(AWS_REGION)
+
 APP_NAME      ?= product-catalog
 TABLE_NAME     = $(APP_NAME)-products
 FUNCTION_NAME  = $(APP_NAME)
 POD_NAME      ?= $(APP_NAME)-state
+LOCAL_BUCKET   = $(APP_NAME)-frontend-local-$(AWS_REGION)
+LOCAL_SUFFIX   = local-$(AWS_REGION)
 PYTHON         = python3
 
 # S3 bucket suffix — use your AWS account ID on real AWS to ensure global uniqueness
@@ -10,6 +14,7 @@ ACCOUNT_ID    := $(shell aws sts get-caller-identity --query Account --output te
 
 # Resolve the local API Gateway invoke URL without requiring TF state
 LOCAL_API     = $(shell awslocal apigatewayv2 get-apis \
+                  --region $(AWS_REGION) \
                   --query "Items[?Name=='$(APP_NAME)'].ApiEndpoint" \
                   --output text 2>/dev/null | tr -d '\n')
 
@@ -19,7 +24,7 @@ LOCAL_API     = $(shell awslocal apigatewayv2 get-apis \
         localstack-start localstack-stop \
         deploy-aws seed-aws test-aws destroy-aws \
         replicate patch-local-lambda \
-        deploy-local seed-local setup-aws-dynamo enable-proxy test-local destroy-local \
+        deploy-local seed-local setup-aws-dynamo enable-proxy disable-proxy proxy-status test-local destroy-local \
         pod-save pod-load pod-list
 
 # ── Help ───────────────────────────────────────────────────────────────────────
@@ -33,9 +38,8 @@ help:  ## Show available targets
 
 ##@ LocalStack
 
-localstack-start:  ## Start LocalStack (Pro required for proxy feature)
+localstack-start:  ## Start LocalStack (Pro required for proxy + Cloud Pods)
 	EXTRA_CORS_ALLOWED_ORIGINS=https://aws-replicator.localhost.localstack.cloud:4566 \
-	GATEWAY_SERVER=hypercorn \
 	localstack start -d
 	@echo "Waiting for LocalStack..."
 	@until localstack status services 2>/dev/null | grep -q running; do sleep 1; done
@@ -49,26 +53,28 @@ localstack-stop:  ## Stop LocalStack
 deploy-aws:  ## Deploy stack to real AWS (DynamoDB + Lambda + S3)
 	cd infra && terraform init -upgrade
 	cd infra && terraform apply -auto-approve \
+	    -state=terraform.aws.tfstate \
 	    -var="aws_region=$(AWS_REGION)" \
 	    -var="app_name=$(APP_NAME)" \
-	    -var="bucket_suffix=$(ACCOUNT_ID)"
+	    -var="bucket_suffix=$(ACCOUNT_ID)-$(AWS_REGION)"
 	@echo ""
-	@echo "AWS API URL:     $$(cd infra && terraform output -raw api_url)"
-	@echo "AWS Website URL: $$(cd infra && terraform output -raw website_url_aws)"
+	@echo "AWS API URL:     $$(cd infra && terraform output -state=terraform.aws.tfstate -raw api_url)"
+	@echo "AWS Website URL: $$(cd infra && terraform output -state=terraform.aws.tfstate -raw website_url_aws)"
 
 seed-aws:  ## Seed AWS DynamoDB with sample products
 	TABLE_NAME=$(TABLE_NAME) AWS_REGION=$(AWS_REGION) $(PYTHON) scripts/seed.py aws
 
 test-aws:  ## Smoke-test the AWS API endpoint
-	@API=$$(cd infra && terraform output -raw api_url 2>/dev/null || echo ""); \
+	@API=$$(cd infra && terraform output -state=terraform.aws.tfstate -raw api_url 2>/dev/null || echo ""); \
 	[ -n "$$API" ] || { echo "Run 'make deploy-aws' first."; exit 1; }; \
 	$(PYTHON) scripts/test.py "$$API"
 
 destroy-aws:  ## Tear down AWS resources
 	cd infra && terraform destroy -auto-approve \
+	    -state=terraform.aws.tfstate \
 	    -var="aws_region=$(AWS_REGION)" \
 	    -var="app_name=$(APP_NAME)" \
-	    -var="bucket_suffix=$(ACCOUNT_ID)"
+	    -var="bucket_suffix=$(ACCOUNT_ID)-$(AWS_REGION)"
 
 replicate:  ## Replicate DynamoDB + Lambda from AWS into LocalStack (run after deploy-aws)
 	APP_NAME=$(APP_NAME) TABLE_NAME=$(TABLE_NAME) FUNCTION_NAME=$(FUNCTION_NAME) \
@@ -91,8 +97,10 @@ patch-local-lambda:  ## Push local handler.py to LocalStack without re-deploying
 deploy-local:  ## Deploy full stack to LocalStack
 	cd infra && tflocal init -upgrade
 	cd infra && tflocal apply -auto-approve \
+	    -state=terraform.local.tfstate \
 	    -var="aws_region=$(AWS_REGION)" \
-	    -var="app_name=$(APP_NAME)"
+	    -var="app_name=$(APP_NAME)" \
+	    -var="bucket_suffix=$(LOCAL_SUFFIX)"
 	@# LocalStack injects the host's real AWS credentials into Lambda containers, which
 	@# puts SDK calls in the real-account namespace (e.g. 411503686428) instead of the
 	@# 000000000000 namespace that tflocal/awslocal use.  Pin to fake creds so the Lambda
@@ -101,9 +109,14 @@ deploy-local:  ## Deploy full stack to LocalStack
 	    --function-name $(FUNCTION_NAME) \
 	    --environment "Variables={TABLE_NAME=$(TABLE_NAME),AWS_ACCESS_KEY_ID=test,AWS_SECRET_ACCESS_KEY=test}" \
 	    --query 'LastModified' --output text
+	@# tflocal stores an AWS-format URL in state for invoke_url; overwrite config.json
+	@# with the actual local endpoint so the frontend auto-populates the correct URL.
+	@printf '{"apiUrl":"%s"}' "$(LOCAL_API)" | \
+	awslocal s3 cp - "s3://$(LOCAL_BUCKET)/config.json" \
+	    --content-type application/json
 	@echo ""
-	@echo "Local API URL:     $$(cd infra && tflocal output -raw api_url)"
-	@echo "Local Website URL: $$(cd infra && tflocal output -raw website_url_local)"
+	@echo "Local API URL:     $(LOCAL_API)"
+	@echo "Local Website URL: $$(cd infra && tflocal output -state=terraform.local.tfstate -raw website_url_local)"
 
 seed-local:  ## Seed local DynamoDB with sample products
 	TABLE_NAME=$(TABLE_NAME) AWS_REGION=$(AWS_REGION) $(PYTHON) scripts/seed.py local
@@ -118,11 +131,25 @@ setup-aws-dynamo:  ## Create + seed the DynamoDB table on real AWS (proxy prereq
 	    --region $(AWS_REGION) 2>/dev/null || echo "  (table already exists)"
 	TABLE_NAME=$(TABLE_NAME) AWS_REGION=$(AWS_REGION) $(PYTHON) scripts/seed.py aws
 
-enable-proxy:  ## Forward LocalStack DynamoDB calls to real AWS (open a separate terminal)
-	@echo "==> Enabling DynamoDB proxy to real AWS. Press Ctrl+C to stop."
-	@echo "    While active, 'make test-local' will return AWS products."
+enable-proxy:  ## Forward LocalStack DynamoDB calls to real AWS via the proxy extension
+	@echo "==> Enabling DynamoDB proxy to real AWS..."
+	@curl -sf -X POST http://localhost:4566/_localstack/aws/proxies \
+	  -H 'Content-Type: application/json' \
+	  -d "{\"config\":{\"services\":{\"dynamodb\":{\"resources\":[\".*\"]}}},\"env_vars\":{\"AWS_ACCESS_KEY_ID\":\"$$AWS_ACCESS_KEY_ID\",\"AWS_SECRET_ACCESS_KEY\":\"$$AWS_SECRET_ACCESS_KEY\",\"AWS_SESSION_TOKEN\":\"$$AWS_SESSION_TOKEN\"}}"
 	@echo ""
-	localstack aws proxy -c proxy_config.yml
+	@echo "  DynamoDB proxy enabled. Run 'make test-local' to see AWS data."
+	@echo "  Run 'make disable-proxy' to stop forwarding."
+
+disable-proxy:  ## Stop forwarding LocalStack DynamoDB calls to real AWS
+	@echo "==> Disabling DynamoDB proxy..."
+	@curl -sf -X POST http://localhost:4566/_localstack/aws/proxies/status \
+	  -H 'Content-Type: application/json' \
+	  -d '{"status": "disabled"}'
+	@echo ""
+	@echo "  DynamoDB proxy disabled. Calls now go to local DynamoDB."
+
+proxy-status:  ## Show current proxy status
+	curl -s http://localhost:4566/_localstack/aws/proxies/status | python3 -m json.tool
 
 test-local:  ## Smoke-test the local API (works after 'replicate' or 'deploy-local')
 	@[ -n "$(LOCAL_API)" ] || { \
@@ -133,8 +160,10 @@ test-local:  ## Smoke-test the local API (works after 'replicate' or 'deploy-loc
 
 destroy-local:  ## Tear down LocalStack resources
 	cd infra && tflocal destroy -auto-approve \
+	    -state=terraform.local.tfstate \
 	    -var="aws_region=$(AWS_REGION)" \
-	    -var="app_name=$(APP_NAME)"
+	    -var="app_name=$(APP_NAME)" \
+	    -var="bucket_suffix=$(LOCAL_SUFFIX)"
 
 ##@ Scenario 3 — Cloud Pods (snapshot and restore full LocalStack state)
 

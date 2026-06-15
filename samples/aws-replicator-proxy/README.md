@@ -33,6 +33,7 @@ Resources deployed:
 - Docker
 - LocalStack CLI — `pip install localstack`
 - `localstack-extension-aws-replicator` CLI package — `pip install localstack-extension-aws-replicator`
+- `localstack-extension-aws-proxy` extension — install once after LocalStack is running: `localstack extensions install localstack-extension-aws-proxy`
 - [Terraform](https://developer.hashicorp.com/terraform/downloads) + [tflocal](https://github.com/localstack/terraform-local) — `pip install terraform-local`
 - [AWS CLI](https://aws.amazon.com/cli/) + [awslocal](https://github.com/localstack/awscli-local) — `pip install awscli-local`
 - Python 3.10+ with `boto3` — `pip install boto3`
@@ -169,24 +170,26 @@ This creates the table on real AWS if it doesn't exist, then seeds it with the s
 ### Step 5 — Enable the DynamoDB proxy
 
 ```bash
-# Open a NEW terminal for this — it runs in the foreground
 make enable-proxy
 ```
 
-This runs `localstack aws proxy -c proxy_config.yml`, which starts a proxy container that intercepts all DynamoDB calls from LocalStack and forwards them to your real AWS account.
+This calls the [LocalStack AWS Proxy extension](https://github.com/localstack/localstack-extensions/tree/main/aws-proxy) API to register a proxy container. It reads your local AWS credentials and POSTs them along with the service config to `http://localhost:4566/_localstack/aws/proxies`. The proxy is scoped to DynamoDB — Lambda, S3, and all other services stay local.
 
-`proxy_config.yml` is configured to proxy **all DynamoDB requests**. You can restrict it to specific tables — see the comments inside.
+The command returns immediately (no blocking terminal needed).
+
+Check proxy state at any time with `make proxy-status`.
 
 ### Step 6 — Test locally again (now seeing AWS data)
 
 ```bash
-# Back in your original terminal
 make test-local
 ```
 
 The same local API endpoint now returns data from real AWS DynamoDB. Your local app is transparently using upstream data with zero code changes.
 
-Press `Ctrl+C` in the proxy terminal to stop proxying. Subsequent calls return to the local DynamoDB.
+```bash
+make disable-proxy   # stop forwarding; subsequent calls return to local DynamoDB
+```
 
 ### Cleanup
 
@@ -279,7 +282,6 @@ make destroy-local
 
 ```
 .
-├── proxy_config.yml        DynamoDB proxy configuration
 ├── Makefile                All commands for all three scenarios (run 'make help')
 ├── infra/
 │   └── main.tf             Terraform: DynamoDB + Lambda + API Gateway + S3 + IAM
@@ -295,15 +297,18 @@ make destroy-local
 
 ## How the proxy works internally
 
-When `localstack aws proxy -c proxy_config.yml` runs:
+When `make enable-proxy` runs:
 
-1. The LocalStack CLI reads your host AWS credentials and starts a lightweight proxy container
-2. The proxy registers itself with the LocalStack server as the handler for DynamoDB requests
-3. Your local Lambda calls `http://localhost.localstack.cloud:4566` (the LocalStack DynamoDB endpoint)
-4. LocalStack routes matching DynamoDB calls through the proxy container to real AWS
-5. Responses flow back through LocalStack to the Lambda — no code change required
+1. It reads your local AWS credentials (`aws configure get …`) and POSTs them with a service config to `http://localhost:4566/_localstack/aws/proxies`
+2. The [LocalStack AWS Proxy extension](https://github.com/localstack/localstack-extensions/tree/main/aws-proxy) starts a lightweight proxy container using those credentials
+3. The proxy registers itself with LocalStack as the handler for DynamoDB requests
+4. Your local Lambda calls the LocalStack DynamoDB endpoint as normal
+5. LocalStack routes matching DynamoDB calls through the proxy container to real AWS
+6. Responses flow back through LocalStack to the Lambda — no code change required
 
 The proxy is service-scoped (`dynamodb: {}`), meaning only DynamoDB is proxied. Lambda, S3, and all other services stay local.
+
+Run `make proxy-status` to check whether the proxy is active, and `make disable-proxy` to stop it.
 
 ## How Cloud Pods work internally
 

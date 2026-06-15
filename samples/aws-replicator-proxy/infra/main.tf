@@ -12,7 +12,7 @@ provider "aws" {
 }
 
 variable "aws_region" {
-  default = "us-east-1"
+  default = "eu-central-1"
 }
 
 variable "app_name" {
@@ -242,7 +242,7 @@ output "frontend_bucket" {
 }
 
 output "website_url_aws" {
-  value       = "http://${aws_s3_bucket.frontend.bucket}.s3-website-${var.aws_region}.amazonaws.com"
+  value       = "http://${aws_s3_bucket_website_configuration.frontend.website_endpoint}"
   description = "S3 website URL (AWS)"
 }
 
