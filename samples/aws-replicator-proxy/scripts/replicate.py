@@ -166,9 +166,12 @@ def create_api_gateway() -> str:
 
     existing = [a for a in apigw.get_apis().get("Items", []) if a["Name"] == APP_NAME]
     if existing:
-        api_id = existing[0]["ApiId"]
+        api_id   = existing[0]["ApiId"]
         print(f"  API '{APP_NAME}' already exists ({api_id})")
-        integ_id = apigw.get_integrations(ApiId=api_id)["Items"][0]["IntegrationId"]
+        integ_items = apigw.get_integrations(ApiId=api_id).get("Items", [])
+        if not integ_items:
+            raise RuntimeError(f"API '{api_id}' exists but has no integrations — delete it and re-run")
+        integ_id = integ_items[0]["IntegrationId"]
     else:
         api    = apigw.create_api(Name=APP_NAME, ProtocolType="HTTP")
         api_id = api["ApiId"]

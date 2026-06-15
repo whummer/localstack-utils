@@ -56,8 +56,13 @@ def main(api_url: str) -> None:
         print(f"FAIL: test item '{test_id}' missing. Got IDs: {ids}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"  OK — {len(after)} product(s), test item confirmed.\n")
-    print("All checks passed.")
+    print(f"  OK — {len(after)} product(s), test item confirmed.")
+
+    print(f"\n--- DELETE /products/{test_id} (cleanup) ---")
+    _call("DELETE", f"{base}/products/{test_id}")
+    print(f"  Removed smoke test item.")
+
+    print("\nAll checks passed.")
 
 
 if __name__ == "__main__":

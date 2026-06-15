@@ -158,7 +158,7 @@
         <span class="pill ${p.inStock ? "in" : "out"}">${p.inStock ? "In Stock" : "Out of Stock"}</span>
         <div class="card-actions">
           <button class="secondary sm" onclick='openEdit(${JSON.stringify(p)})'>Edit</button>
-          <button class="danger sm" onclick="deleteProduct('${esc(p.id)}', '${esc(p.name)}')">Delete</button>
+          <button class="danger sm" onclick="deleteProduct(${JSON.stringify(p.id)}, ${JSON.stringify(p.name)})">Delete</button>
         </div>
       </div>
     `).join("");
