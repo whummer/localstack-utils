@@ -22,12 +22,16 @@ an S3 bucket and a real Lambda deploy + invoke.
    invoke time), and boots the image with Firecracker. It polls
    `http://<vm-ip>:4566/_localstack/health` until LocalStack is ready.
 4. **`make test`** creates an S3 bucket and round-trips an object, then
-   deploys a small Python Lambda function, invokes it, and asserts the
-   response — all against the LocalStack instance running inside the
-   microVM. `lstk` runs LocalStack as a container against the guest's own
-   Docker daemon, which is also what LocalStack itself uses to spawn the
-   Lambda executor container — the same two-layer shape real Lambda uses
-   (a container runtime inside a Firecracker microVM).
+   deploys a small Python Lambda function and invokes it. The function
+   itself creates a *second* bucket and lists all buckets via `boto3`
+   (LocalStack injects `AWS_ENDPOINT_URL` into the Lambda execution
+   environment automatically, so no endpoint code is needed) — proving the
+   Lambda's own AWS calls land on the same LocalStack backend as the CLI
+   calls above: it sees the first bucket, and the one it creates is visible
+   back on the CLI afterward. `lstk` runs LocalStack as a container against
+   the guest's own Docker daemon, which is also what LocalStack itself uses
+   to spawn the Lambda executor container — the same two-layer shape real
+   Lambda uses (a container runtime inside a Firecracker microVM).
 5. **`make down`** / **`make clean`** tear the VM, NAT rules, and tap device
    down again.
 

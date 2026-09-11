@@ -95,15 +95,35 @@ sudo setsid "$FC_BIN" --api-sock "$SOCKET" --config-file "$CONFIG" \
 disown
 echo $! | sudo tee "$PIDFILE" >/dev/null
 
+SSH_KEY="$WORK_DIR/images/id_rsa"
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+          -o BatchMode=yes -o ConnectTimeout=5 -i "$SSH_KEY" "root@${VM_IP}")
+
+# A cold `lstk` pull of the LocalStack image can legitimately take minutes,
+# so the overall budget below stays generous -- but a broken docker.service
+# or localstack.service (lstk itself failing to start, no auto-restart)
+# reaches a terminal "failed" state within seconds of boot, so there is no
+# reason to wait out the full budget for that case. Poll for it (after a
+# short boot grace period) and bail immediately once either has failed.
+is_service_broken() {
+  [[ -f "$SSH_KEY" ]] || return 1
+  local states
+  states=$(ssh "${SSH_OPTS[@]}" 'systemctl is-active docker.service localstack.service' 2>/dev/null || echo "")
+  [[ "$states" == *failed* ]]
+}
+
 echo "[run] waiting for LocalStack to become healthy at http://${VM_IP}:4566 ..."
-# Generous budget: guest boot + dockerd startup + LocalStack cold start.
-for _ in $(seq 1 90); do
+for i in $(seq 1 90); do
   if curl -fsS "http://${VM_IP}:4566/_localstack/health" >/dev/null 2>&1; then
     echo "[run] LocalStack is up: http://${VM_IP}:4566"
     exit 0
   fi
+  if (( i > 12 )) && (( i % 6 == 0 )) && is_service_broken; then
+    echo "[run] docker.service or localstack.service failed inside the guest; not waiting further. Run 'make diagnose' for details." >&2
+    exit 1
+  fi
   sleep 5
 done
 
-echo "[run] timed out waiting for LocalStack; check $LOG" >&2
+echo "[run] timed out waiting for LocalStack; check $LOG or 'make diagnose'" >&2
 exit 1

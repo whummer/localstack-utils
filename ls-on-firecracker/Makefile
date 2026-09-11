@@ -13,8 +13,9 @@ VCPUS        := 2
 MEM_MB       := 4096
 BUCKET       := firecracker-demo
 LAMBDA_FN    := firecracker-demo-fn
+LAMBDA_BUCKET := firecracker-demo-lambda-bucket
 
-export WORK_DIR TAP_DEV TAP_IP VM_IP VM_MASK VCPUS MEM_MB BUCKET LAMBDA_FN FC_VERSION CI_TRACK ARCH LOCALSTACK_AUTH_TOKEN
+export WORK_DIR TAP_DEV TAP_IP VM_IP VM_MASK VCPUS MEM_MB BUCKET LAMBDA_FN LAMBDA_BUCKET FC_VERSION CI_TRACK ARCH LOCALSTACK_AUTH_TOKEN
 
 SSH := ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
          -o BatchMode=yes -o ConnectTimeout=10 \
@@ -46,8 +47,11 @@ ssh: ## SSH into the running microVM as root
 
 diagnose: ## Dump docker/localstack service status + logs from inside the microVM
 	@$(SSH) 'systemctl --no-pager status docker.service localstack.service; \
-	  echo ---docker.journal---; journalctl -u docker --no-pager -n 200; \
-	  echo ---localstack.journal---; journalctl -u localstack --no-pager -n 200'
+	  echo ---localstack.service exit info---; \
+	  systemctl show localstack.service -p Result -p ExecMainStatus -p ExecMainCode; \
+	  echo ---docker.journal---; journalctl -u docker --no-pager -n 100; \
+	  echo ---localstack.journal (full unit history, Restart=no so this is one attempt)---; \
+	  journalctl -u localstack --no-pager'
 
 down: ## Stop the microVM and remove the tap device
 	@bash scripts/teardown.sh

@@ -110,8 +110,12 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/lstk start --non-interactive --timeout 120s
 TimeoutStartSec=200
-Restart=on-failure
-RestartSec=5
+# No auto-restart: a single clear failure (visible via `systemctl is-failed`
+# and its journal) is far more useful for a demo/CI than systemd silently
+# retrying a broken command every few seconds for the entire boot budget,
+# burying the real error under repeated "Failed to start" lines. Re-run
+# `make up` (which boots a fresh VM) to retry.
+Restart=no
 
 [Install]
 WantedBy=multi-user.target
