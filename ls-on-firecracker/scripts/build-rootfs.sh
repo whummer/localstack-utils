@@ -108,6 +108,25 @@ UNIT
 sudo cp "$WORK_DIR/bin/lstk" "$MNT/usr/local/bin/lstk"
 sudo chmod +x "$MNT/usr/local/bin/lstk"
 
+# lstk publishes the emulator's port bound to the *guest's* loopback by
+# default (127.0.0.1) -- fine when lstk and its caller are on the same host,
+# but we reach the emulator from outside the guest, over the tap network.
+# The bind host comes from the first entry of GATEWAY_LISTEN, which lstk only
+# reads from a config.toml [env.*] profile (a plain LOCALSTACK_GATEWAY_LISTEN
+# process env var reaches the container too late, after the host-side Docker
+# port binding is already decided). $HOME is /root (set above), so this is
+# the second entry in lstk's config search order.
+sudo mkdir -p "$MNT/root/.config/lstk"
+sudo tee "$MNT/root/.config/lstk/config.toml" >/dev/null <<'TOML'
+[[containers]]
+type = "aws"
+port = "4566"
+env  = ["net"]
+
+[env.net]
+GATEWAY_LISTEN = "0.0.0.0:4566,0.0.0.0:443"
+TOML
+
 # lstk pulls the LocalStack image and starts it as a container against the
 # guest's own Docker daemon -- the container is what actually runs LocalStack
 # and spawns Lambda executor containers, exactly like real Lambda uses a

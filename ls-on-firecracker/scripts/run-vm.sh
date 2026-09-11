@@ -126,4 +126,17 @@ for i in $(seq 1 90); do
 done
 
 echo "[run] timed out waiting for LocalStack; check $LOG or 'make diagnose'" >&2
+# One more data point while the VM is still up: is the container actually
+# listening, and is it reachable from *inside* the guest (loopback) even
+# though it is not reachable from us (over the tap network)? That tells us
+# whether this is a bind-address issue or a NAT/forwarding issue.
+if [[ -f "$SSH_KEY" ]]; then
+  echo "[run] --- port binding + in-guest reachability ---" >&2
+  ssh "${SSH_OPTS[@]}" '
+    echo "listening sockets on 4566:"; ss -tlnp | grep -E ":(4566)\b" || echo "(none)";
+    echo "docker port mappings:"; docker ps --format "{{.Names}}: {{.Ports}}" 2>/dev/null || echo "(docker ps failed)";
+    echo "curl from inside the guest:";
+    curl -fsS -m 5 http://localhost:4566/_localstack/health && echo || echo "(failed)"
+  ' >&2 2>&1 || echo "[run] (SSH diagnostic itself failed)" >&2
+fi
 exit 1
