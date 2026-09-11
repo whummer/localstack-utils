@@ -48,12 +48,20 @@ sudo mount -t tmpfs tmpfs "$MNT/tmp"
 sudo mount -t tmpfs tmpfs "$MNT/run"
 sudo chmod 1777 "$MNT/tmp"
 
-# This CI-provided base image ships apt/dpkg binaries but an empty
-# /var/lib/dpkg (no `status` file, no info/updates/triggers dirs) -- it was
-# stripped for Firecracker's own network-test use, not general package
-# installs. Bootstrap a fresh, empty dpkg database, the same thing tools
-# like debootstrap do, so apt has something to work from.
-sudo mkdir -p "$MNT/var/lib/dpkg/info" "$MNT/var/lib/dpkg/updates" "$MNT/var/lib/dpkg/triggers"
+# This CI-provided base image ships apt/dpkg binaries, but it was stripped
+# for Firecracker's own network-test use, not general package installs:
+# /var/cache/apt, /var/lib/apt and /var/log don't exist at all, and
+# /var/lib/dpkg is an empty directory with no status file. Recreate the
+# standard skeleton apt/dpkg expect -- the same bootstrap debootstrap itself
+# does for a fresh root -- before touching either.
+sudo mkdir -p \
+  "$MNT/var/cache/apt/archives/partial" \
+  "$MNT/var/lib/apt/lists/partial" \
+  "$MNT/var/log/apt" \
+  "$MNT/var/lib/dpkg/info" \
+  "$MNT/var/lib/dpkg/updates" \
+  "$MNT/var/lib/dpkg/triggers" \
+  "$MNT/var/backups"
 sudo touch "$MNT/var/lib/dpkg/status" "$MNT/var/lib/dpkg/available"
 
 echo "[rootfs] installing Docker + LocalStack inside the guest image (this can take a few minutes)"
