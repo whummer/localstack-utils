@@ -40,6 +40,13 @@ sudo cp /etc/resolv.conf "$MNT/etc/resolv.conf"
 sudo mount --bind /dev "$MNT/dev"
 sudo mount --bind /proc "$MNT/proc"
 sudo mount --bind /sys "$MNT/sys"
+# The base image's /tmp and /run are normally populated by systemd-tmpfiles
+# at boot; without that, apt/dpkg (which write scratch files there) fail
+# with confusing "No such file or directory" errors inside the chroot.
+sudo mkdir -p "$MNT/tmp" "$MNT/run"
+sudo mount -t tmpfs tmpfs "$MNT/tmp"
+sudo mount -t tmpfs tmpfs "$MNT/run"
+sudo chmod 1777 "$MNT/tmp"
 
 echo "[rootfs] installing Docker + LocalStack inside the guest image (this can take a few minutes)"
 sudo chroot "$MNT" /bin/bash -c '
