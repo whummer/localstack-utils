@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Turns the pristine CI rootfs into a "LocalStack appliance": grows the ext4
-# image, chroots into it, pip-installs LocalStack + awslocal, and registers a
-# systemd unit that starts LocalStack on boot.
+# image, chroots into it to install Docker and drop in the lstk binary, and
+# registers a systemd unit that runs `lstk start` (which pulls and runs the
+# LocalStack container against the guest's own Docker daemon) on boot.
 #
 # The chroot shares the host's network namespace (it's just a mounted
-# directory, not a container), so apt/pip work normally as long as the host
-# has internet access. The guest VM itself does NOT get internet access at
-# boot -- it doesn't need it, everything is already baked into the image.
+# directory, not a container), so apt-get works normally here as long as the
+# host has internet access. The guest VM itself needs its own internet
+# access too, at boot time this time -- lstk has to pull the LocalStack
+# image and Lambda invocations pull runtime images -- which is what the NAT
+# setup in run-vm.sh is for.
 set -euo pipefail
 
 : "${WORK_DIR:?run via 'make', not directly}"
@@ -75,28 +78,40 @@ sudo chroot "$MNT" /bin/bash -c '
   apt-get install -y -qq \
     -o Dpkg::Options::=--force-confdef \
     -o Dpkg::Options::=--force-confold \
-    python3-pip python3-venv docker.io >/dev/null
-  # This base image is Ubuntu 22.04 (jammy), whose bundled pip predates
-  # PEP 668 "externally managed environment" enforcement, so it does not
-  # understand --break-system-packages -- and does not need it either.
-  pip3 install -q localstack awscli-local
+    docker.io >/dev/null
+  # The Firecracker CI kernel does not compile in nf_tables (only the
+  # legacy x_tables framework), but Ubuntu 22.04 iptables defaults to the
+  # nftables backend -- dockerd then fails at startup with "Failed to
+  # initialize nft: Protocol not supported". Switch to the legacy backend,
+  # which the kernel does support.
+  update-alternatives --set iptables /usr/sbin/iptables-legacy
+  update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
   systemctl enable docker.service
 '
+sudo cp "$WORK_DIR/bin/lstk" "$MNT/usr/local/bin/lstk"
+sudo chmod +x "$MNT/usr/local/bin/lstk"
 
-# LocalStack uses the guest's own Docker daemon to run the Lambda executor
-# container, exactly like real Lambda uses a container runtime inside its
-# Firecracker microVM. It needs to start after (and depend on) Docker.
+# lstk pulls the LocalStack image and starts it as a container against the
+# guest's own Docker daemon -- the container is what actually runs LocalStack
+# and spawns Lambda executor containers, exactly like real Lambda uses a
+# container runtime inside its Firecracker microVM. `lstk start` blocks
+# until the emulator is ready and then exits, so the unit that "is" this
+# service is really the container, not this process -- hence oneshot +
+# RemainAfterExit rather than a long-running ExecStart.
 sudo tee "$MNT/etc/systemd/system/localstack.service" >/dev/null <<'UNIT'
 [Unit]
-Description=LocalStack
-After=docker.service network.target
+Description=LocalStack (via lstk)
+After=docker.service network-online.target
+Wants=network-online.target
 Requires=docker.service
 
 [Service]
-Environment=LOCALSTACK_HOST=0.0.0.0
-ExecStart=/usr/local/bin/localstack start --host
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/lstk start --non-interactive --timeout 120s
+TimeoutStartSec=200
 Restart=on-failure
-RestartSec=2
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -105,10 +120,11 @@ UNIT
 sudo chroot "$MNT" systemctl enable localstack.service
 
 # The chroot borrowed the host's /etc/resolv.conf (often a systemd-resolved
-# stub at 127.0.0.53) to resolve apt/pip mirrors during the build above. That
+# stub at 127.0.0.53) to resolve apt mirrors during the build above. That
 # address is meaningless once the image boots as its own VM, so pin a public
-# resolver for runtime -- the guest needs it to pull the Lambda runtime image
-# from ECR public over the NAT'd link `run-vm.sh` sets up.
+# resolver for runtime -- the guest needs it to pull the LocalStack image
+# (lstk) and the Lambda runtime image (LocalStack itself) over the NAT'd
+# link run-vm.sh sets up.
 sudo tee "$MNT/etc/resolv.conf" >/dev/null <<'EOF'
 nameserver 8.8.8.8
 nameserver 1.1.1.1

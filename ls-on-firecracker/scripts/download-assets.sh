@@ -45,6 +45,26 @@ else
   rm -rf "$tmp"
 fi
 
+# lstk is LocalStack's own CLI: it pulls the LocalStack image, starts it as a
+# container against the guest's Docker daemon, and waits for it to be ready.
+# It ends up baked into the guest rootfs (see build-rootfs.sh), not run on
+# the host, so we resolve its release for the *guest's* architecture.
+GOARCH="$(if [[ "$ARCH" == "aarch64" ]]; then echo arm64; else echo amd64; fi)"
+if [[ -x "$BIN_DIR/lstk" ]]; then
+  echo "[download] lstk binary already present, skipping"
+else
+  echo "[download] fetching latest lstk for linux/$GOARCH"
+  lstk_tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/localstack/lstk/releases/latest" | sed 's#.*/##')
+  [[ -n "$lstk_tag" ]] || { echo "could not resolve the latest lstk release" >&2; exit 1; }
+  lstk_ver="${lstk_tag#v}"
+  tmp=$(mktemp -d)
+  curl -fsSL "https://github.com/localstack/lstk/releases/download/${lstk_tag}/lstk_${lstk_ver}_linux_${GOARCH}.tar.gz" \
+    | tar -xz -C "$tmp" lstk
+  mv "$tmp/lstk" "$BIN_DIR/lstk"
+  chmod +x "$BIN_DIR/lstk"
+  rm -rf "$tmp"
+fi
+
 if [[ -f "$IMG_DIR/vmlinux.bin" ]]; then
   echo "[download] kernel already present, skipping"
 else
@@ -78,4 +98,4 @@ else
     || echo "[download] warning: no matching SSH key found for this rootfs, 'make ssh' won't work" >&2
 fi
 
-echo "[download] done -> $BIN_DIR/firecracker, $IMG_DIR/vmlinux.bin, $IMG_DIR/base.ext4"
+echo "[download] done -> $BIN_DIR/firecracker, $BIN_DIR/lstk, $IMG_DIR/vmlinux.bin, $IMG_DIR/base.ext4"

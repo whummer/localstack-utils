@@ -7,23 +7,27 @@ an S3 bucket and a real Lambda deploy + invoke.
 
 ## How it works
 
-1. **`make download`** grabs the `firecracker` binary, a guest kernel and a
-   base Ubuntu rootfs from Firecracker's public CI artifacts.
+1. **`make download`** grabs the `firecracker` binary, LocalStack's own
+   [`lstk`](https://docs.localstack.cloud/aws/developer-tools/running-localstack/lstk/)
+   CLI, a guest kernel and a base Ubuntu rootfs from Firecracker's public CI
+   artifacts.
 2. **`make rootfs`** clones the base rootfs, grows it, and chroots in to
-   install Docker plus `pip install localstack awscli-local`, and registers
-   `systemd` units so Docker and then `localstack start --host` come up on
-   boot. Building happens on the host via a loop-mounted image, so the
-   customization step itself doesn't need the guest to be running.
+   install Docker and drop in the `lstk` binary, then registers `systemd`
+   units so Docker and then `lstk start` come up on boot. Building happens on
+   the host via a loop-mounted image, so the customization step itself
+   doesn't need the guest to be running.
 3. **`make up`** creates a tap network device on the host, NATs the guest out
-   through the host's default interface (LocalStack needs to `docker pull`
-   the Lambda runtime image at invoke time), and boots the image with
-   Firecracker. It polls `http://<vm-ip>:4566/_localstack/health` until
-   LocalStack is ready.
+   through the host's default interface (`lstk` needs to pull the LocalStack
+   image, and LocalStack itself needs to pull the Lambda runtime image at
+   invoke time), and boots the image with Firecracker. It polls
+   `http://<vm-ip>:4566/_localstack/health` until LocalStack is ready.
 4. **`make test`** creates an S3 bucket and round-trips an object, then
    deploys a small Python Lambda function, invokes it, and asserts the
    response — all against the LocalStack instance running inside the
-   microVM. Lambda execution goes through the guest's own Docker daemon,
-   exactly like it would against a normal `docker run localstack` setup.
+   microVM. `lstk` runs LocalStack as a container against the guest's own
+   Docker daemon, which is also what LocalStack itself uses to spawn the
+   Lambda executor container — the same two-layer shape real Lambda uses
+   (a container runtime inside a Firecracker microVM).
 5. **`make down`** / **`make clean`** tear the VM, NAT rules, and tap device
    down again.
 
@@ -51,24 +55,42 @@ services, which is what the CI workflow does automatically on failure.
   AWS CLI (`aws`) on the host.
 - `sudo` access — the scripts use it for loop-mounting the rootfs image,
   managing the tap device and NAT rules, and launching `firecracker` itself.
-- Optionally, a `LOCALSTACK_AUTH_TOKEN` environment variable on the host —
-  if set, it's passed through into the guest's `localstack.service` at boot.
+- A `LOCALSTACK_AUTH_TOKEN` environment variable on the host, set to a
+  LocalStack **CI Auth Token** (not a personal Developer Auth Token — `lstk`
+  rejects those non-interactively). It's passed through into the guest's
+  `localstack.service` at boot. Get one from
+  [your LocalStack workspace](https://app.localstack.cloud/workspace/auth-tokens).
 
 ## What's actually running
 
 Docker runs *inside* the guest OS (installed at rootfs-build time), and
-LocalStack uses it as its normal Docker-based Lambda executor. The guest
-needs internet access at Lambda invoke time to pull the runtime image, which
-is why `run-vm.sh` sets up NAT through the host rather than an isolated
-host-only network.
+`lstk` uses it to pull and run the LocalStack container, which in turn uses
+the same Docker daemon as its normal Docker-based Lambda executor. The guest
+needs internet access both to pull the LocalStack image and, at Lambda
+invoke time, the runtime image — which is why `run-vm.sh` sets up NAT
+through the host rather than an isolated host-only network.
+
+## Caveats
+
+The base rootfs comes from Firecracker's own **CI test artifacts** — it's
+what their integration tests boot, not a general-purpose image, and it's
+stripped down accordingly (no `/var/cache/apt`, `/var/log`, or populated
+dpkg database out of the box; `build-rootfs.sh` reconstructs what apt/Docker
+need). It works, but a more idiomatic base for "run a Docker image as a
+Firecracker rootfs" is `docker export`-ing a real image (e.g. `ubuntu:22.04`)
+onto a formatted ext4 device. For running actual container workloads inside
+Firecracker in production, see
+[firecracker-containerd](https://github.com/firecracker-microvm/firecracker-containerd)
+(what AWS Lambda/Fargate use) instead of a full Docker-in-VM setup like this
+one.
 
 ## Layout
 
 ```
 Makefile               self-describing entry point (make help)
 scripts/
-  download-assets.sh   fetch firecracker + kernel + base rootfs
-  build-rootfs.sh       install Docker + LocalStack into a working rootfs image
+  download-assets.sh   fetch firecracker + lstk + kernel + base rootfs
+  build-rootfs.sh       install Docker + lstk into a working rootfs image
   run-vm.sh             set up networking (incl. NAT) and boot the microVM
   smoke-test.sh         S3 round-trip + Lambda deploy/invoke against it
   teardown.sh           stop the VM and remove the tap device / NAT rules
