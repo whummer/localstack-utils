@@ -76,7 +76,10 @@ sudo chroot "$MNT" /bin/bash -c '
     -o Dpkg::Options::=--force-confdef \
     -o Dpkg::Options::=--force-confold \
     python3-pip python3-venv docker.io >/dev/null
-  pip3 install --break-system-packages -q localstack awscli-local
+  # This base image is Ubuntu 22.04 (jammy), whose bundled pip predates
+  # PEP 668 "externally managed environment" enforcement, so it does not
+  # understand --break-system-packages -- and does not need it either.
+  pip3 install -q localstack awscli-local
   systemctl enable docker.service
 '
 
