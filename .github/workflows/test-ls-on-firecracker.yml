@@ -47,6 +47,10 @@ jobs:
         if: failure()
         run: cat work/firecracker.log 2>/dev/null || true
 
+      - name: Dump service diagnostics on failure
+        if: failure()
+        run: make diagnose 2>/dev/null || true
+
       - name: Tear down
         if: always()
         run: make down

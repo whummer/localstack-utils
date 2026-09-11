@@ -33,7 +33,11 @@ make test    # exercise S3 + Lambda through it
 make down    # stop the VM
 ```
 
-Run `make help` for the full target list.
+Run `make help` for the full target list. `make ssh` drops you into a root
+shell on the running microVM (the base image ships a pre-authorized SSH key,
+fetched by `download-assets.sh` alongside the kernel/rootfs); `make diagnose`
+dumps `systemctl status` and `journalctl` for the `docker`/`localstack`
+services, which is what the CI workflow does automatically on failure.
 
 ## Prerequisites
 
@@ -43,8 +47,8 @@ Run `make help` for the full target list.
   runner (which has KVM enabled) all work. See
   `.github/workflows/test-ls-on-firecracker.yml` in the repo root for a
   working CI setup.
-- `curl`, `iproute2`, `iptables`, `e2fsprogs`, `zip`, `jq`, and the AWS CLI
-  (`aws`) on the host.
+- `curl`, `iproute2`, `iptables`, `e2fsprogs`, `zip`, `jq`, `ssh`, and the
+  AWS CLI (`aws`) on the host.
 - `sudo` access — the scripts use it for loop-mounting the rootfs image,
   managing the tap device and NAT rules, and launching `firecracker` itself.
 - Optionally, a `LOCALSTACK_AUTH_TOKEN` environment variable on the host —

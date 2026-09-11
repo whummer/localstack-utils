@@ -67,6 +67,13 @@ else
     | sort -V | tail -1)
   [[ -n "$rootfs_key" ]] || { echo "could not resolve a base rootfs for CI track $CI_TRACK/$ARCH" >&2; exit 1; }
   curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/${rootfs_key}" -o "$IMG_DIR/base.ext4"
+
+  # This base image ships sshd running with a pre-authorized root key; the
+  # matching private key is published alongside it. Handy for `make ssh`
+  # and for pulling diagnostics (systemctl/journalctl) when a boot fails.
+  curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/${rootfs_key}.id_rsa" -o "$IMG_DIR/id_rsa" \
+    && chmod 600 "$IMG_DIR/id_rsa" \
+    || echo "[download] warning: no matching SSH key found for this rootfs, 'make ssh' won't work" >&2
 fi
 
 echo "[download] done -> $BIN_DIR/firecracker, $IMG_DIR/vmlinux.bin, $IMG_DIR/base.ext4"

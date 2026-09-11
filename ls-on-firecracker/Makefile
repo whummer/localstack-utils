@@ -16,7 +16,10 @@ LAMBDA_FN    := firecracker-demo-fn
 
 export WORK_DIR TAP_DEV TAP_IP VM_IP VM_MASK VCPUS MEM_MB BUCKET LAMBDA_FN FC_VERSION CI_TRACK ARCH LOCALSTACK_AUTH_TOKEN
 
-.PHONY: help download rootfs up test logs down clean
+SSH := ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+         -i $(WORK_DIR)/images/id_rsa root@$(VM_IP)
+
+.PHONY: help download rootfs up test logs down clean ssh diagnose
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -36,6 +39,14 @@ test: ## Run S3 + Lambda smoke tests against the running LocalStack instance
 
 logs: ## Tail the microVM's console/boot log
 	@tail -n 100 -f $(WORK_DIR)/firecracker.log
+
+ssh: ## SSH into the running microVM as root
+	@$(SSH)
+
+diagnose: ## Dump docker/localstack service status + logs from inside the microVM
+	@$(SSH) 'systemctl --no-pager status docker.service localstack.service; \
+	  echo ---docker.journal---; journalctl -u docker --no-pager -n 200; \
+	  echo ---localstack.journal---; journalctl -u localstack --no-pager -n 200'
 
 down: ## Stop the microVM and remove the tap device
 	@bash scripts/teardown.sh
