@@ -108,6 +108,10 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# systemd services don't get $HOME the way login shells do, but lstk needs
+# it to resolve its config/cache directory (~/.cache/lstk/...); this unit
+# runs as root (no User= override), so point it at root's home.
+Environment=HOME=/root
 ExecStart=/usr/local/bin/lstk start --non-interactive --timeout 120s
 TimeoutStartSec=200
 # No auto-restart: a single clear failure (visible via `systemctl is-failed`
