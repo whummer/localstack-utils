@@ -50,7 +50,7 @@ diagnose: ## Dump docker/localstack service status + logs from inside the microV
 	  echo ---localstack.service exit info---; \
 	  systemctl show localstack.service -p Result -p ExecMainStatus -p ExecMainCode; \
 	  echo ---docker.journal---; journalctl -u docker --no-pager -n 100; \
-	  echo ---localstack.journal (full unit history, Restart=no so this is one attempt)---; \
+	  echo "---localstack.journal (single attempt, Restart=no)---"; \
 	  journalctl -u localstack --no-pager'
 
 down: ## Stop the microVM and remove the tap device
