@@ -88,6 +88,23 @@ sudo chroot "$MNT" /bin/bash -c '
   update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
   systemctl enable docker.service
 '
+
+# Docker 28+ adds a DROP rule in the iptables "raw" table as a hardening
+# measure (prevents reaching a container directly, bypassing its published
+# port restriction). That table needs CONFIG_IP_NF_RAW, which this kernel
+# does not have -- and can't load at runtime either, since module loading
+# is compiled out entirely. DOCKER_INSECURE_NO_IPTABLES_RAW=1 (Docker
+# 28.0.2+) is the documented opt-out for exactly this case. The tradeoff
+# (a container published to 127.0.0.1 becomes reachable from other hosts
+# on the same network) is acceptable here: this microVM is single-tenant,
+# ephemeral, and only reachable via the host-only tap network run-vm.sh
+# sets up, not by "other hosts on the local network".
+sudo mkdir -p "$MNT/etc/systemd/system/docker.service.d"
+sudo tee "$MNT/etc/systemd/system/docker.service.d/no-iptables-raw.conf" >/dev/null <<'UNIT'
+[Service]
+Environment=DOCKER_INSECURE_NO_IPTABLES_RAW=1
+UNIT
+
 sudo cp "$WORK_DIR/bin/lstk" "$MNT/usr/local/bin/lstk"
 sudo chmod +x "$MNT/usr/local/bin/lstk"
 

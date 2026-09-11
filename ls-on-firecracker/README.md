@@ -88,6 +88,16 @@ Firecracker in production, see
 (what AWS Lambda/Fargate use) instead of a full Docker-in-VM setup like this
 one.
 
+Relatedly: the kernel doesn't have `CONFIG_IP_NF_RAW` (and can't load it —
+module loading is compiled out entirely), which Docker 28+ needs for a
+hardening rule that stops a container from being reached directly,
+bypassing its published-port restriction. `build-rootfs.sh` sets
+`DOCKER_INSECURE_NO_IPTABLES_RAW=1` (Docker's documented opt-out for exactly
+this case) to work around it. The tradeoff — a container published to
+`127.0.0.1` becomes reachable from other hosts on the same network — is
+acceptable for this single-tenant, ephemeral microVM reachable only over its
+own host-only tap network, but wouldn't be on a shared or long-lived host.
+
 ## Layout
 
 ```
