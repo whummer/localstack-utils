@@ -1,0 +1,52 @@
+name: LocalStack on Firecracker
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ls-on-firecracker/**'
+      - '.github/workflows/test-ls-on-firecracker.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ls-on-firecracker/**'
+      - '.github/workflows/test-ls-on-firecracker.yml'
+  workflow_dispatch:
+
+env:
+  LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_AUTH_TOKEN }}
+
+jobs:
+  test-ls-on-firecracker:
+    name: Firecracker microVM + LocalStack + S3/Lambda smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ls-on-firecracker
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Boot the microVM
+        run: make up
+
+      - name: Run S3 + Lambda smoke test
+        run: make test
+
+      - name: Dump console/boot log on failure
+        if: failure()
+        run: cat work/firecracker.log 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        run: make down
