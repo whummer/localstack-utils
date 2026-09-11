@@ -17,6 +17,7 @@ LAMBDA_FN    := firecracker-demo-fn
 export WORK_DIR TAP_DEV TAP_IP VM_IP VM_MASK VCPUS MEM_MB BUCKET LAMBDA_FN FC_VERSION CI_TRACK ARCH LOCALSTACK_AUTH_TOKEN
 
 SSH := ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+         -o BatchMode=yes -o ConnectTimeout=10 \
          -i $(WORK_DIR)/images/id_rsa root@$(VM_IP)
 
 .PHONY: help download rootfs up test logs down clean ssh diagnose

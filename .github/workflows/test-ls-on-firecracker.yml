@@ -49,7 +49,7 @@ jobs:
 
       - name: Dump service diagnostics on failure
         if: failure()
-        run: make diagnose 2>/dev/null || true
+        run: make diagnose || true
 
       - name: Tear down
         if: always()

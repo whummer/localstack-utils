@@ -69,9 +69,11 @@ else
   curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/${rootfs_key}" -o "$IMG_DIR/base.ext4"
 
   # This base image ships sshd running with a pre-authorized root key; the
-  # matching private key is published alongside it. Handy for `make ssh`
-  # and for pulling diagnostics (systemctl/journalctl) when a boot fails.
-  curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/${rootfs_key}.id_rsa" -o "$IMG_DIR/id_rsa" \
+  # matching private key is published as a sibling of the .ext4 file (e.g.
+  # ubuntu-22.04.id_rsa next to ubuntu-22.04.ext4), not an appended suffix.
+  # Handy for `make ssh` and pulling diagnostics when a boot fails.
+  rsa_key="${rootfs_key%.ext4}.id_rsa"
+  curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/${rsa_key}" -o "$IMG_DIR/id_rsa" \
     && chmod 600 "$IMG_DIR/id_rsa" \
     || echo "[download] warning: no matching SSH key found for this rootfs, 'make ssh' won't work" >&2
 fi
