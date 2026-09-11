@@ -69,7 +69,13 @@ sudo chroot "$MNT" /bin/bash -c '
   set -euo pipefail
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq python3-pip python3-venv docker.io >/dev/null
+  # --force-confdef/--force-confold: some packages (libpam-modules and
+  # friends) think their conffiles were locally modified in this base image
+  # and prompt for a merge decision on stdin, which is not a TTY here.
+  apt-get install -y -qq \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confold \
+    python3-pip python3-venv docker.io >/dev/null
   pip3 install --break-system-packages -q localstack awscli-local
   systemctl enable docker.service
 '
