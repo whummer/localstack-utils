@@ -1,0 +1,23 @@
+services:
+  # LocalStack for the AWS side (S3 data lake + reports bucket)
+  localstack:
+    container_name: localstack-bruin-aws
+    image: localstack/localstack-pro:latest
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
+    environment:
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:?LOCALSTACK_AUTH_TOKEN is required}
+      - SERVICES=s3
+
+  # LocalStack Snowflake emulator (next generation)
+  snowflake:
+    container_name: localstack-bruin-snowflake
+    image: localstack/snowflake-next:latest
+    ports:
+      - "127.0.0.1:${SNOWFLAKE_PORT:-4567}:4566"
+    environment:
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:?LOCALSTACK_AUTH_TOKEN is required}
+      # External S3 stages are read from / unloaded to the LocalStack container above
+      - SF_S3_ENDPOINT=http://localstack:4566
+    depends_on:
+      - localstack

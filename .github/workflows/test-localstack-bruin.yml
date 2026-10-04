@@ -1,0 +1,58 @@
+name: Bruin on LocalStack
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'localstack-bruin/**'
+      - '.github/workflows/test-localstack-bruin.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'localstack-bruin/**'
+      - '.github/workflows/test-localstack-bruin.yml'
+  workflow_dispatch:
+
+env:
+  LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_SNOWFLAKE_AUTH_TOKEN }}
+
+jobs:
+  test-localstack-bruin:
+    name: Bruin pipeline on LocalStack S3 + Snowflake (snowflake-next)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: localstack-bruin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Bruin CLI
+        run: |
+          curl -LsSf https://getbruin.com/install/cli | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Start LocalStack
+        run: make start
+
+      - name: Seed S3
+        run: make seed
+
+      - name: Validate pipeline
+        run: make validate
+
+      - name: Run pipeline
+        run: make run
+
+      - name: Check report
+        run: make test
+
+      - name: Dump LocalStack logs on failure
+        if: failure()
+        run: make logs || true
+
+      - name: Tear down
+        if: always()
+        run: make stop

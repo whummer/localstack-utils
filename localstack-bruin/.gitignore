@@ -1,0 +1,7 @@
+__pycache__/
+logs/
+.venv/
+
+# Bruin auto-adds `.bruin.yml` here; this sample commits it on purpose (dummy LocalStack creds only)
+.bruin.yml
+!.bruin.yml
