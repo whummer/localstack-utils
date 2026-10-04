@@ -12,6 +12,7 @@ secrets:
   - key: localstack-snowflake
     inject_as: SNOWFLAKE_CONN
   - key: SNOWFLAKE_HOST
+  - key: SNOWFLAKE_PORT
 @bruin"""
 
 from .common import snowflake_connect

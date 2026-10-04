@@ -6,7 +6,7 @@ environments:
     connections:
       # LocalStack Snowflake. Bruin's native Snowflake connection always targets
       # *.snowflakecomputing.com, so the Python assets get this connection injected
-      # as a secret and connect to the host below themselves.
+      # as a secret and connect to the host/port below themselves.
       snowflake:
         - name: localstack-snowflake
           account: test
@@ -17,5 +17,5 @@ environments:
       generic:
         - name: SNOWFLAKE_HOST
           value: snowflake.localhost.localstack.cloud
-        - name: AWS_ENDPOINT_URL
-          value: http://localhost:4566
+        - name: SNOWFLAKE_PORT
+          value: ${SNOWFLAKE_PORT}

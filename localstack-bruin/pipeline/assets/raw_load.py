@@ -9,11 +9,10 @@ secrets:
   - key: localstack-snowflake
     inject_as: SNOWFLAKE_CONN
   - key: SNOWFLAKE_HOST
+  - key: SNOWFLAKE_PORT
 @bruin"""
 
 from .common import snowflake_connect
-
-CSV_FORMAT = "FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)"
 
 
 def main():
@@ -22,17 +21,19 @@ def main():
             "CREATE DATABASE IF NOT EXISTS SHOP",
             "CREATE SCHEMA IF NOT EXISTS SHOP.RAW",
             "USE SCHEMA SHOP.RAW",
+            "CREATE OR REPLACE FILE FORMAT csv_format TYPE = CSV PARSE_HEADER = TRUE",
             # External stage pointing at the LocalStack S3 bucket
             """CREATE OR REPLACE STAGE raw_stage
                   URL = 's3://shop-raw/'
-                  CREDENTIALS = (AWS_KEY_ID = 'test' AWS_SECRET_KEY = 'test')""",
+                  CREDENTIALS = (AWS_KEY_ID = 'test' AWS_SECRET_KEY = 'test')
+                  FILE_FORMAT = csv_format""",
             """CREATE OR REPLACE TABLE CUSTOMERS (
                   customer_id INT, name VARCHAR, country VARCHAR, signup_date DATE)""",
             """CREATE OR REPLACE TABLE ORDERS (
                   order_id INT, customer_id INT, order_date DATE, product VARCHAR,
                   quantity INT, unit_price NUMBER(10, 2))""",
-            f"COPY INTO CUSTOMERS FROM @raw_stage/customers/ {CSV_FORMAT}",
-            f"COPY INTO ORDERS FROM @raw_stage/orders/ {CSV_FORMAT}",
+            "COPY INTO CUSTOMERS FROM @raw_stage/customers/ MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE",
+            "COPY INTO ORDERS FROM @raw_stage/orders/ MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE",
         ]:
             cur.execute(stmt)
 

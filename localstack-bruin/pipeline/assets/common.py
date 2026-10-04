@@ -1,10 +1,11 @@
-"""Shared helpers for connecting the Python assets to LocalStack (Snowflake + AWS)."""
+"""Shared helper for connecting the Python assets to the LocalStack Snowflake emulator."""
 
 import json
 import os
 
-import boto3
 import snowflake.connector
+
+DEFAULT_SNOWFLAKE_PORT = 4567
 
 
 def snowflake_connect(**kwargs):
@@ -12,20 +13,10 @@ def snowflake_connect(**kwargs):
     conn = json.loads(os.environ["SNOWFLAKE_CONN"])
     return snowflake.connector.connect(
         host=os.environ["SNOWFLAKE_HOST"],
-        port=4566,
+        port=int(os.environ.get("SNOWFLAKE_PORT") or DEFAULT_SNOWFLAKE_PORT),
         account=conn["account"],
         user=conn["username"],
         password=conn["password"],
         warehouse=conn.get("warehouse"),
         **kwargs,
-    )
-
-
-def aws_client(service):
-    return boto3.client(
-        service,
-        endpoint_url=os.environ["AWS_ENDPOINT_URL"],
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-        region_name="us-east-1",
     )
