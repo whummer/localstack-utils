@@ -19,7 +19,10 @@ start: ## Start LocalStack (AWS + Snowflake emulator)
 wait: ## Wait until S3 and Snowflake are available
 	@echo "Waiting for LocalStack..."
 	@for i in $$(seq 1 90); do \
-	  curl -s localhost:4566/_localstack/health | grep -q '"snowflake": "available"' && exit 0; sleep 2; \
+	  curl -s localhost:4566/_localstack/health | grep -q '"snowflake": "available"' && exit 0; \
+	  if docker compose logs localstack 2>/dev/null | grep -q "not covered by your license"; then \
+	    echo "Your LOCALSTACK_AUTH_TOKEN does not include the Snowflake emulator"; exit 1; fi; \
+	  sleep 2; \
 	done; echo "Timed out waiting for LocalStack"; exit 1
 
 seed: ## Create S3 buckets and upload the raw CSV files

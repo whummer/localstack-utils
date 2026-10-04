@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 env:
-  LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_AUTH_TOKEN }}
+  LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_SNOWFLAKE_AUTH_TOKEN }}
 
 jobs:
   test-localstack-bruin:
