@@ -1,0 +1,21 @@
+# Bruin connections, all pointing at LocalStack. The credentials are LocalStack's
+# dummy defaults, so this file is safe to commit.
+default_environment: local
+environments:
+  local:
+    connections:
+      # LocalStack Snowflake. Bruin's native Snowflake connection always targets
+      # *.snowflakecomputing.com, so the Python assets get this connection injected
+      # as a secret and connect to the host below themselves.
+      snowflake:
+        - name: localstack-snowflake
+          account: test
+          username: test
+          password: test
+          database: SHOP
+          warehouse: TEST
+      generic:
+        - name: SNOWFLAKE_HOST
+          value: snowflake.localhost.localstack.cloud
+        - name: AWS_ENDPOINT_URL
+          value: http://localhost:4566

@@ -1,0 +1,11 @@
+services:
+  localstack:
+    container_name: localstack-bruin
+    image: localstack/snowflake:latest
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:?LOCALSTACK_AUTH_TOKEN is required}
+      - DEBUG=${DEBUG:-0}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

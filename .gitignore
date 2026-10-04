@@ -104,3 +104,7 @@ venv.bak/
 .mypy_cache/
 
 .idea/
+
+logs/runs
+logs/*.log
+logs/queries
