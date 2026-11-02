@@ -3,12 +3,30 @@
 An enterprise purchase-request app where an **AI agent** reviews requests inside a
 **Lambda durable function**. Everything runs locally on LocalStack.
 
-```
-browser ──> Lambda web function (Function URL) ──> DynamoDB (requests, vendors, budgets)
-                    │ invoke (named durable execution)
-                    ▼
-        durable function: agent loop (Bedrock) ─ tools ─ guardrail ─ human approval ─ ERP ─┬─> S3 PO document
-                                                                                            └─> SNS ─> SQS ─> notifier Lambda
+```mermaid
+flowchart LR
+    user([Browser]) -->|HTTP| web["Lambda web function<br/>Function URL: UI + JSON API"]
+    web <-->|read and write| ddb[("DynamoDB<br/>requests, vendors, budgets")]
+    web -->|"async invoke<br/>named durable execution"| wf
+
+    subgraph wf["Durable function: procurement workflow"]
+        direction TB
+        agent["Agent loop<br/>LLM turn, tool call (each a checkpoint)"] --> guard{"Policy guardrail<br/>stricter of agent and rules"}
+        guard -->|reject| rejected([Rejected])
+        guard -->|escalate| human["Wait for callback<br/>human approval"]
+        guard -->|approve| commit
+        human -->|approved| commit["Commit budget,<br/>post to ERP with retries"]
+        human -->|rejected or timeout| rejected
+        commit -->|ERP down| saga["Compensate:<br/>release budget"]
+        commit --> fan["Fan out in parallel"]
+    end
+
+    agent <-.->|"tools: vendor, budget, policy"| ddb
+    agent -.->|"MODEL_MODE=bedrock"| bedrock["Bedrock<br/>(Ollama model)"]
+    web -.->|"send callback success<br/>Approve / Reject button"| human
+    commit --> ddb
+    fan --> s3[("S3<br/>purchase order")]
+    fan --> sns["SNS topic"] --> sqs["SQS queue"] --> notifier["Lambda notifier"] --> ddb
 ```
 
 ## Talk points
