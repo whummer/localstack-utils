@@ -1,0 +1,67 @@
+name: AWS re:Invent 2026 (Procurement Copilot)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'aws-reinvent-2026/**'
+      - '.github/workflows/test-aws-reinvent-2026.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'aws-reinvent-2026/**'
+      - '.github/workflows/test-aws-reinvent-2026.yml'
+  workflow_dispatch:
+
+jobs:
+  integration-test:
+    name: Deploy to LocalStack and run integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: aws-reinvent-2026
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install awscli and test dependencies
+        run: pip install awscli -r tests/requirements.txt
+
+      - name: Start LocalStack (Lambda durable functions need a Pro license)
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_AUTH_TOKEN }}
+        run: |
+          docker run -d --name localstack -p 4566:4566 -p 4510-4559:4510-4559 \
+            -e LOCALSTACK_AUTH_TOKEN \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            localstack/localstack-pro:latest
+          for i in $(seq 1 60); do
+            curl -sf localhost:4566/_localstack/health >/dev/null && break
+            sleep 2
+          done
+          curl -s localhost:4566/_localstack/info
+
+      - name: Deploy the stack
+        run: make deploy
+
+      - name: Run integration tests
+        run: make test
+
+      - name: LocalStack logs on failure
+        if: failure()
+        run: docker logs localstack 2>&1 | tail -200
+
+      - name: Stop LocalStack
+        if: always()
+        run: docker rm -f localstack

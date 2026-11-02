@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Procurement Copilot - Lambda web function + AI agent in a durable function + DynamoDB, S3, SNS, SQS, Bedrock
+
+Parameters:
+  CodeBucket: {Type: String}
+  WorkflowKey: {Type: String}
+  WebKey: {Type: String}
+  NotifierKey: {Type: String}
+  Architecture: {Type: String, Default: arm64}
+  ModelMode: {Type: String, Default: rules, AllowedValues: [rules, bedrock]}
+
+Resources:
+  RequestsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: procure-requests
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: requestId, AttributeType: S}]
+      KeySchema: [{AttributeName: requestId, KeyType: HASH}]
+
+  VendorsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: procure-vendors
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: vendorId, AttributeType: S}]
+      KeySchema: [{AttributeName: vendorId, KeyType: HASH}]
+
+  BudgetsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: procure-budgets
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: department, AttributeType: S}]
+      KeySchema: [{AttributeName: department, KeyType: HASH}]
+
+  DocsBucket:
+    Type: AWS::S3::Bucket
+    Properties: {BucketName: procure-documents}
+
+  NotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties: {TopicName: procure-notifications}
+
+  NotificationsQueue:
+    Type: AWS::SQS::Queue
+    Properties: {QueueName: procure-notifications, VisibilityTimeout: 30}
+
+  NotificationsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref NotificationsQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: {Service: sns.amazonaws.com}
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationsQueue.Arn
+            Condition: {ArnEquals: {'aws:SourceArn': !Ref NotificationsTopic}}
+
+  NotificationsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt NotificationsQueue.Arn
+
+  # One shared role keeps the demo short; scope it down per function for real use.
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - {Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}
+      Policies:
+        - PolicyName: procure
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                  - dynamodb:*
+                  - s3:PutObject
+                  - bedrock:InvokeModel
+                  - bedrock:Converse
+                  - sns:Publish
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - lambda:InvokeFunction
+                  - lambda:CheckpointDurableExecution
+                  - lambda:GetDurableExecutionState
+                  - lambda:GetDurableExecutionHistory
+                  - lambda:SendDurableExecutionCallbackSuccess
+                  - lambda:SendDurableExecutionCallbackFailure
+                Resource: '*'
+
+  WorkflowFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: procure-workflow
+      Runtime: python3.13
+      Handler: handler.handler
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 120
+      Architectures: [!Ref Architecture]
+      Code: {S3Bucket: !Ref CodeBucket, S3Key: !Ref WorkflowKey}
+      DurableConfig: {ExecutionTimeout: 1800, RetentionPeriodInDays: 1}
+      Environment:
+        Variables:
+          REQUESTS_TABLE: !Ref RequestsTable
+          VENDORS_TABLE: !Ref VendorsTable
+          BUDGETS_TABLE: !Ref BudgetsTable
+          DOCS_BUCKET: !Ref DocsBucket
+          NOTIFICATIONS_TOPIC: !Ref NotificationsTopic
+          MODEL_MODE: !Ref ModelMode
+          APPROVAL_TIMEOUT_SECONDS: '300'
+
+  NotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: procure-notifier
+      Runtime: python3.13
+      Handler: handler.handler
+      Role: !GetAtt FunctionRole.Arn
+      Architectures: [!Ref Architecture]
+      Code: {S3Bucket: !Ref CodeBucket, S3Key: !Ref NotifierKey}
+      Environment: {Variables: {REQUESTS_TABLE: !Ref RequestsTable}}
+
+  NotifierMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref NotifierFunction
+      EventSourceArn: !GetAtt NotificationsQueue.Arn
+      BatchSize: 1
+
+  WebFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: procure-web
+      Runtime: python3.13
+      Handler: handler.handler
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 30
+      Architectures: [!Ref Architecture]
+      Code: {S3Bucket: !Ref CodeBucket, S3Key: !Ref WebKey}
+      Environment:
+        Variables:
+          REQUESTS_TABLE: !Ref RequestsTable
+          BUDGETS_TABLE: !Ref BudgetsTable
+          WORKFLOW_FUNCTION: !Ref WorkflowFunction
+
+  WebUrl:
+    Type: AWS::Lambda::Url
+    Properties: {TargetFunctionArn: !GetAtt WebFunction.Arn, AuthType: NONE}
+
+  WebUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  WebUrl: {Value: !GetAtt WebUrl.FunctionUrl}

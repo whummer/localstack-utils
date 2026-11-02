@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Procurement Copilot</title>
+<style>
+:root{--bg:#0f1220;--card:#181c30;--fg:#e8eaf6;--mute:#8b90b0;--acc:#6c7bff;--ok:#3ecf8e;--warn:#f5a524;--bad:#ff5c7a}
+*{box-sizing:border-box}body{margin:0;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{padding:16px 24px;border-bottom:1px solid #262b47}h1{margin:0;font-size:20px}h1 small{color:var(--mute);font-weight:400}
+main{display:grid;grid-template-columns:360px 1fr;gap:20px;padding:20px 24px}@media(max-width:800px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:16px}h2{margin:0 0 12px;font-size:13px;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+textarea{width:100%;height:90px;background:#0f1220;color:var(--fg);border:1px solid #2d3356;border-radius:8px;padding:8px;font:inherit}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}button.no{background:var(--bad)}button.ok{background:var(--ok);color:#06210f}
+button.ex{background:#2d3356;font-weight:400;font-size:12px;padding:4px 10px;margin:2px 4px 2px 0}
+.badge{padding:2px 10px;border-radius:99px;font-size:12px;font-weight:700;background:#2d3356}
+.PO_ISSUED{background:var(--ok);color:#06210f}.REJECTED{background:var(--bad)}.AWAITING_APPROVAL,.ERP_RETRY{background:var(--warn);color:#2b1c00}
+.head{display:flex;justify-content:space-between;align-items:center;gap:8px}.tl{display:flex;flex-wrap:wrap;gap:4px;margin:10px 0}
+.ev{font-size:11px;padding:2px 8px;border-radius:6px;background:#0f1220;border:1px solid #2d3356}.ev.f{border-color:var(--bad);color:var(--bad)}.ev.s{border-color:var(--ok)}
+.note{color:var(--mute);font-size:13px}label.chk{display:flex;gap:6px;align-items:center;margin:8px 0;font-size:13px}
+.tr{font:12px ui-monospace,monospace;padding:4px 8px;margin:3px 0;border-left:3px solid #2d3356;background:#0f1220;border-radius:4px;word-break:break-word}
+.tr.llm{border-color:var(--acc)}.tr.tool{border-color:var(--warn)}.tr.decision{border-color:var(--ok);font-weight:700}
+.bar{height:6px;background:#0f1220;border-radius:3px;margin:3px 0 10px}.bar i{display:block;height:100%;background:var(--acc);border-radius:3px}
+</style></head><body>
+<header><h1>Procurement Copilot <small>AI agent + durable function + Lambda web function, all local</small></h1></header>
+<main>
+ <section>
+  <div class="card"><h2>New purchase request</h2>
+   <textarea id="text" placeholder="Describe what you need, in plain English"></textarea>
+   <div>
+    <button class="ex" onclick="ex(0)">auto-approve</button><button class="ex" onclick="ex(1)">needs human</button><button class="ex" onclick="ex(2)">blocked vendor</button><button class="ex" onclick="ex(3)">over limit</button>
+   </div>
+   <label class="chk"><input id="flaky" type="checkbox"> flaky ERP (times out twice)</label>
+   <button onclick="submitReq()">Submit to agent</button></div>
+  <div class="card"><h2>Department budgets</h2><div id="budgets"></div></div>
+ </section>
+ <section id="reqs"></section>
+</main>
+<script>
+const $=s=>document.querySelector(s), money=c=>'$'+(c/100).toLocaleString('en-US',{maximumFractionDigits:0});
+const EX=["Need 5 laptops for the new data engineering hires, around $12k, from Dell.",
+"Replace the core network switches in the datacenter, about $38k from Cisco Systems.",
+"Marketing wants a $9k booth giveaway order from ShadyCorp, urgent.",
+"We want to buy $80k of servers from Dell for the engineering team."];
+const ex=i=>$('#text').value=EX[i];
+async function submitReq(){const text=$('#text').value;if(!text)return;
+ await fetch('/api/requests',{method:'POST',body:JSON.stringify({text,flaky:$('#flaky').checked})});$('#text').value='';refresh()}
+async function decide(id,approved){await fetch(`/api/requests/${id}/decision`,{method:'POST',body:JSON.stringify({approved})});refresh()}
+const evc=t=>/Failed|Timed/.test(t)?'f':/Succeeded/.test(t)?'s':'';
+async function refresh(){
+ const [reqs,budgets]=await Promise.all([fetch('/api/requests').then(r=>r.json()),fetch('/api/budgets').then(r=>r.json())]);
+ $('#budgets').innerHTML=budgets.map(b=>`<div>${b.department} <span class="note">${money(b.remaining_cents)} / ${money(b.total_cents)}</span><div class="bar"><i style="width:${100*b.remaining_cents/b.total_cents}%"></i></div></div>`).join('');
+ $('#reqs').innerHTML=reqs.map(o=>`<div class="card"><div class="head"><b>${o.requestId}</b><span class="badge ${o.status}">${o.status}</span></div>
+  <p>${o.text}</p>${o.detail?`<div class="note">${o.detail}</div>`:''}
+  ${o.status=='AWAITING_APPROVAL'?`<p>Approver needed: <button class="ok" onclick="decide('${o.requestId}',true)">Approve</button> <button class="no" onclick="decide('${o.requestId}',false)">Reject</button></p>`:''}
+  ${(o.trace||[]).map(t=>`<div class="tr ${t.kind}">${t.kind=='llm'?'🧠':t.kind=='tool'?'🔧':'⚖️'} ${t.text}</div>`).join('')}
+  <div class="tl">${(o.timeline||[]).filter(e=>!/Started$/.test(e.type)).map(e=>`<span class="ev ${evc(e.type)}">${e.type}${e.name?': '+e.name:''}</span>`).join('')}</div>
+  ${(o.notifications||[]).map(n=>`<div class="note">📧 ${n.text}</div>`).join('')}</div>`).join('')||'<p class="note">No requests yet.</p>'}
+refresh();setInterval(refresh,2000);
+</script></body></html>
