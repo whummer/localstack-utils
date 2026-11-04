@@ -1,57 +1,529 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Procurement Copilot</title>
+<title>Close Copilot</title>
 <style>
-:root{--bg:#0f1220;--card:#181c30;--fg:#e8eaf6;--mute:#8b90b0;--acc:#6c7bff;--ok:#3ecf8e;--warn:#f5a524;--bad:#ff5c7a}
-*{box-sizing:border-box}body{margin:0;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
-header{padding:16px 24px;border-bottom:1px solid #262b47}h1{margin:0;font-size:20px}h1 small{color:var(--mute);font-weight:400}
-main{display:grid;grid-template-columns:360px 1fr;gap:20px;padding:20px 24px}@media(max-width:800px){main{grid-template-columns:1fr}}
-.card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:16px}h2{margin:0 0 12px;font-size:13px;color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
-textarea{width:100%;height:90px;background:#0f1220;color:var(--fg);border:1px solid #2d3356;border-radius:8px;padding:8px;font:inherit}
-button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}button.no{background:var(--bad)}button.ok{background:var(--ok);color:#06210f}
-button.ex{background:#2d3356;font-weight:400;font-size:12px;padding:4px 10px;margin:2px 4px 2px 0}
-.badge{padding:2px 10px;border-radius:99px;font-size:12px;font-weight:700;background:#2d3356}
-.PO_ISSUED{background:var(--ok);color:#06210f}.REJECTED{background:var(--bad)}.AWAITING_APPROVAL,.ERP_RETRY{background:var(--warn);color:#2b1c00}
-.head{display:flex;justify-content:space-between;align-items:center;gap:8px}.tl{display:flex;flex-wrap:wrap;gap:4px;margin:10px 0}
-.ev{font-size:11px;padding:2px 8px;border-radius:6px;background:#0f1220;border:1px solid #2d3356}.ev.f{border-color:var(--bad);color:var(--bad)}.ev.s{border-color:var(--ok)}
-.note{color:var(--mute);font-size:13px}label.chk{display:flex;gap:6px;align-items:center;margin:8px 0;font-size:13px}
-.tr{font:12px ui-monospace,monospace;padding:4px 8px;margin:3px 0;border-left:3px solid #2d3356;background:#0f1220;border-radius:4px;word-break:break-word}
-.tr.llm{border-color:var(--acc)}.tr.tool{border-color:var(--warn)}.tr.decision{border-color:var(--ok);font-weight:700}
-.bar{height:6px;background:#0f1220;border-radius:3px;margin:3px 0 10px}.bar i{display:block;height:100%;background:var(--acc);border-radius:3px}
-</style></head><body>
-<header><h1>Procurement Copilot <small>AI agent + durable function + Lambda web function, all local</small></h1></header>
+:root{color-scheme:dark;--bg:#0d1020;--card:#171b30;--fg:#e8eaf6;--mute:#9aa0c3;--acc:#6c7bff;--accfg:#fff;--ok:#3ecf8e;--warn:#f5a524;--bad:#ff5c7a;--guard:#b98cff;
+ --inset:#0f1324;--line:#2d3356;--hline:#262b47;--chip:#252a4a;--chipfg:#e8eaf6;--shadow:none;--okfg:#06210f;--warnfg:#2b1c00;
+ --c-timing:#5b8cff;--c-duplicate:#b98cff;--c-fee:#f5a524;--c-fx:#2ec4b6;--c-unexplained:#ff5c7a}
+:root[data-theme=light]{color-scheme:light;--bg:#f3f5fb;--card:#fff;--fg:#1b2033;--mute:#566086;--acc:#4a5af0;--ok:#168a5c;--warn:#b86e00;--bad:#d03050;--guard:#7a4fd6;
+ --inset:#f0f2fa;--line:#d5daea;--hline:#e1e5f2;--chip:#e6e9f6;--chipfg:#1b2033;--shadow:0 1px 3px rgba(20,28,60,.08);--okfg:#fff;--warnfg:#fff;
+ --c-timing:#2f64e0;--c-duplicate:#7a4fd6;--c-fee:#c07a00;--c-fx:#0e8f84;--c-unexplained:#d03050}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg);transition:background-color .2s,color .2s}
+button{font:inherit;cursor:pointer;border:0;border-radius:8px;padding:8px 14px;font-weight:600;background:var(--acc);color:var(--accfg)}
+button:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button:disabled{opacity:.5;cursor:default}
+button.ghost{background:var(--chip);color:var(--chipfg);font-weight:500}
+button.ok{background:var(--ok);color:var(--okfg)}button.no{background:var(--bad);color:#fff}
+header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 24px;border-bottom:1px solid var(--hline);background:var(--card)}
+.brand{display:flex;align-items:center;gap:10px}.logo{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--acc),var(--c-fx));display:grid;place-items:center;color:#fff;font-weight:800}
+h1{margin:0;font-size:18px}h1 small{display:block;font-size:11px;font-weight:400;color:var(--mute)}
+.sp{flex:1}.seg{display:inline-flex;background:var(--chip);border-radius:9px;padding:2px}
+.seg button{background:transparent;color:var(--chipfg);padding:5px 12px;font-weight:500}.seg button[aria-pressed=true]{background:var(--acc);color:var(--accfg)}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600;background:var(--chip);color:var(--chipfg)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mute)}.live .dot{background:var(--ok);animation:pulse 1.6s infinite}
+button.theme{background:var(--chip);color:var(--chipfg);font-size:16px;padding:4px 10px;line-height:1.2}
+main{display:grid;grid-template-columns:300px 1fr;gap:20px;padding:20px 24px;max-width:1500px;margin:0 auto}
+@media(max-width:900px){main{grid-template-columns:1fr;padding:14px 12px}header{padding:10px 12px}}
+.card{background:var(--card);border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow);border:1px solid var(--hline)}
+h2{margin:0 0 10px;font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.07em}
+.mute{color:var(--mute)}.small{font-size:12px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.col{display:flex;flex-direction:column;gap:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--inset);border:1px solid var(--line)}.chip.f{border-color:var(--bad);color:var(--bad)}.chip.s{border-color:var(--ok)}
+.chip.on{border-color:var(--warn);color:var(--warn)}
+.badge{padding:2px 10px;border-radius:99px;font-size:11px;font-weight:700;background:var(--chip);color:var(--chipfg);white-space:nowrap}
+.b-CLOSED,.b-POSTED,.b-DONE{background:var(--ok);color:var(--okfg)}.b-REJECTED,.b-BLOCKED{background:var(--bad);color:#fff}
+.b-AWAITING_APPROVAL,.b-ERP_RETRY,.b-ROLLED_BACK,.b-REVERSED,.b-WAITING_FEEDS,.b-WAITING_FEED,.b-PROPOSED{background:var(--warn);color:var(--warnfg)}
+.b-RECONCILING,.b-POSTING,.b-STARTED,.b-DRAFTED{background:var(--acc);color:var(--accfg)}
+.banner{border-radius:12px;padding:14px 16px;margin-bottom:16px;font-weight:600;border:1px solid}
+.banner small{display:block;font-weight:400;opacity:.9}
+.banner.ok{background:color-mix(in srgb,var(--ok) 16%,var(--card));border-color:var(--ok)}
+.banner.warn{background:color-mix(in srgb,var(--warn) 16%,var(--card));border-color:var(--warn)}
+.banner.bad{background:color-mix(in srgb,var(--bad) 16%,var(--card));border-color:var(--bad)}
+.inbox{border-color:var(--acc);border-width:2px}
+.stats{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 12px}.stat b{display:block;font-size:20px}
+details>summary{cursor:pointer;list-style:none}details>summary::-webkit-details-marker{display:none}
+details.drawer>summary h2{margin:0;display:flex;justify-content:space-between}
+details.drawer>summary h2::after{content:"▾"}details.drawer:not([open])>summary h2::after{content:"▸"}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--hline);margin-bottom:14px;flex-wrap:wrap}
+.tabs button{background:transparent;color:var(--mute);border-radius:8px 8px 0 0;font-weight:500;border-bottom:2px solid transparent}
+.tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:var(--acc)}
+.ents{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.ent{background:var(--inset);border:1px solid var(--line);border-radius:12px;padding:14px}
+.ent header{all:unset;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.ring{position:relative;width:64px;height:64px;flex:none}.ring svg{transform:rotate(-90deg)}.ring b{position:absolute;inset:0;display:grid;place-items:center;font-size:14px}
+.steps{list-style:none;margin:12px 0 0;padding:0;display:flex}
+.steps li{flex:1;text-align:center;font-size:11px;color:var(--mute);position:relative}
+.steps li::before{content:"";display:block;width:16px;height:16px;border-radius:50%;margin:0 auto 4px;border:2px solid var(--line);background:var(--card);position:relative;z-index:1}
+.steps li::after{content:"";position:absolute;top:8px;left:calc(-50% + 8px);width:calc(100% - 16px);height:2px;background:var(--line)}
+.steps li:first-child::after{display:none}
+.steps li.done{color:var(--fg)}.steps li.done::before{background:var(--ok);border-color:var(--ok)}.steps li.done::after{background:var(--ok)}
+.steps li.active{color:var(--fg);font-weight:700}.steps li.active::before{border-color:var(--acc);background:var(--acc);animation:pulse 1.4s infinite}
+.steps li.wait{color:var(--warn);font-weight:700}.steps li.wait::before{border-color:var(--warn);background:var(--warn);animation:pulse 1.4s infinite}
+.steps li.bad{color:var(--bad);font-weight:700}.steps li.bad::before{border-color:var(--bad);background:var(--bad)}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 40%,transparent)}50%{box-shadow:0 0 0 6px transparent}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-top:16px}
+.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--mute);margin-top:6px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
+svg text{fill:var(--fg);font:11px system-ui,sans-serif}svg text.m{fill:var(--mute)}
+#nb{max-height:60vh;overflow-y:auto;padding-right:4px}
+.msg{margin:8px 0;display:flex;gap:8px;align-items:flex-start}
+.av{width:26px;height:26px;border-radius:50%;background:var(--acc);color:#fff;display:grid;place-items:center;font-size:13px;flex:none}
+.bub{background:var(--inset);border:1px solid var(--line);border-radius:4px 12px 12px 12px;padding:8px 12px;min-width:0;flex:1;word-break:break-word}
+.tag{font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px;background:var(--chip);margin-right:6px}
+.msg.guardrail .bub{border-color:var(--guard);background:color-mix(in srgb,var(--guard) 12%,var(--inset))}
+.msg.guardrail .av{background:var(--guard)}.msg.tool .av{background:var(--warn);color:var(--warnfg)}.msg.sandbox .av{background:var(--c-fx);color:#fff}
+.msg.system{opacity:.8;font-size:12px}.msg.system .av{background:var(--chip);color:var(--mute)}
+.gl{color:var(--guard);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+pre{margin:6px 0 0;padding:10px;background:#0a0d1a;color:#d6dcff;border-radius:8px;overflow-x:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
+pre.out{background:var(--inset);color:var(--fg);border:1px dashed var(--line)}
+.lg{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--inset);border:1px solid var(--line);border-radius:8px;padding:8px;height:min(60vh,560px);overflow:auto}
+.lg div{white-space:pre-wrap;word-break:break-word;padding:1px 0}.lg .t{color:var(--mute)}.lg .f{display:inline-block;min-width:68px;font-weight:700}
+.lg .f.workflow{color:var(--acc)}.lg .f.sandbox{color:var(--warn)}.lg .f.notifier{color:var(--ok)}.lg .ERROR,.lg .ERROR .f{color:var(--bad)}.lg .WARNING{color:var(--warn)}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--hline);vertical-align:top}
+th{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.05em}.num{text-align:right;font-variant-numeric:tabular-nums}
+tr.BLOCKED td.d{text-decoration:line-through;color:var(--mute)}.why{color:var(--bad);font-size:12px;text-decoration:none!important;display:block}
+.tbl{overflow-x:auto}
+ul.audit{list-style:none;margin:0;padding:0}ul.audit li{padding:6px 0;border-bottom:1px solid var(--hline)}
+.empty{padding:30px;text-align:center;color:var(--mute)}
+
+/* ---- Under the hood: a separate "console" layer (own background, type and palette) */
+:root{--hood-bg:#0a1628;--hood-card:#10223b;--hood-line:#21406a;--hood-fg:#d3e5ff;--hood-mute:#8aa7cf;--hood-acc:#4fb3ff;--hood-ok:#3ecf8e;--hood-warn:#f5b942;--hood-bad:#ff6b88;--hood-grid:rgba(79,179,255,.07);--hood-shadow:-8px 0 24px rgba(0,0,0,.35)}
+:root[data-theme=light]{--hood-bg:#d9e4f2;--hood-card:#ebf1f9;--hood-line:#aebfd9;--hood-fg:#16283f;--hood-mute:#4d6486;--hood-acc:#1560c0;--hood-ok:#0b7a4d;--hood-warn:#8f5400;--hood-bad:#b8223f;--hood-grid:rgba(21,96,192,.08);--hood-shadow:-8px 0 24px rgba(20,40,80,.12)}
+[hidden]{display:none!important}
+.shell{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start}.shell>main{min-width:0}
+button.hoodbtn{background:var(--chip);color:var(--chipfg);font-weight:600}button.hoodbtn[aria-expanded=true]{background:var(--hood-bg);color:var(--hood-fg);box-shadow:inset 0 0 0 1px var(--hood-line)}
+#hood{position:sticky;top:var(--hdr,0px);align-self:start;height:calc(100vh - var(--hdr,0px));width:390px;display:flex;flex-direction:column;background-color:var(--hood-bg);
+ background-image:linear-gradient(var(--hood-grid) 1px,transparent 1px),linear-gradient(90deg,var(--hood-grid) 1px,transparent 1px);background-size:22px 22px;
+ color:var(--hood-fg);border-left:1px solid var(--hood-line);box-shadow:var(--hood-shadow);font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;transition:width .2s}
+#hood.closed{width:40px}
+.hood-strip{flex:1;border-radius:0;background:transparent;color:var(--hood-fg);writing-mode:vertical-rl;transform:rotate(180deg);letter-spacing:.14em;text-transform:uppercase;font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;padding:14px 0}
+.hood-strip:hover{background:color-mix(in srgb,var(--hood-acc) 14%,transparent)}
+#hood button:focus-visible,#hood summary:focus-visible{outline-color:var(--hood-acc)}
+#hoodBody{flex:1;min-height:0;overflow-y:auto;padding:12px 12px 28px}
+.hh{display:flex;align-items:center;justify-content:space-between;gap:8px}.hh b{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--hood-acc)}
+.hx{background:transparent;color:var(--hood-mute);padding:0 8px;font-size:18px;line-height:1.2}.hx:hover{color:var(--hood-fg)}
+.hsub{color:var(--hood-mute);margin:2px 0 6px}.hconn{display:flex;align-items:center;gap:6px;color:var(--hood-mute)}
+.hc{background:color-mix(in srgb,var(--hood-card) 94%,transparent);border:1px solid var(--hood-line);border-radius:8px;margin:10px 0}
+.hc>summary{padding:8px 10px;color:var(--hood-mute);font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:11px;display:flex;justify-content:space-between}
+.hc>summary::after{content:"▾"}.hc:not([open])>summary::after{content:"▸"}.hc>.hb{padding:0 10px 10px}
+.hg{display:flex;align-items:center;gap:6px;margin:10px 0 2px;color:var(--hood-acc);font-weight:700}.hg:first-child{margin-top:0}
+.svc{display:inline-grid;place-items:center;min-width:22px;height:16px;padding:0 4px;border-radius:4px;background:var(--hood-line);color:var(--hood-fg);font-size:10px;font-weight:700}
+.hr{display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px dashed var(--hood-line)}.hr:last-child{border-bottom:0}.hr.sub{padding-left:14px}
+.hr>b{margin-left:auto;font-variant-numeric:tabular-nums}.hm{color:var(--hood-mute);margin-left:auto;text-align:right}.hm b{color:var(--hood-fg)}.hr>.hm:first-of-type{margin-left:auto}
+.sd{width:8px;height:8px;border-radius:50%;background:var(--hood-mute);flex:none;display:inline-block}.sd.ok{background:var(--hood-ok)}.sd.warn{background:var(--hood-warn)}.sd.bad{background:var(--hood-bad)}
+.kd{font-size:10px;padding:0 6px;border-radius:4px;border:1px solid var(--hood-line);color:var(--hood-mute)}
+.kd.durable{color:var(--hood-acc);border-color:var(--hood-acc)}.kd.sandbox,.kd.held{color:var(--hood-warn);border-color:var(--hood-warn)}.kd.web{color:var(--hood-ok);border-color:var(--hood-ok)}
+.hp{display:inline-flex;gap:4px;padding:1px 8px;border-radius:99px;border:1px solid var(--hood-line);margin:2px 4px 2px 0;color:var(--hood-mute)}.hp b{color:var(--hood-fg)}
+.hp.hot{border-color:var(--hood-acc);color:var(--hood-acc)}.hp.hot b{color:var(--hood-acc)}.hp.bad{border-color:var(--hood-bad);color:var(--hood-bad)}.hp.bad b{color:var(--hood-bad)}
+@keyframes flash{0%{background:color-mix(in srgb,var(--hood-acc) 55%,transparent)}100%{background:transparent}}
+.flash{animation:flash 1.2s ease-out;border-radius:4px}
+.hskel{padding:10px;color:var(--hood-mute);background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--hood-acc) 14%,transparent),transparent) 0 0/200% 100%;animation:shimmer 1.6s infinite}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+.hsm{list-style:none;margin:4px 0 0;padding:0}
+.hsm li{position:relative;padding:5px 0 5px 26px;color:var(--hood-mute)}
+.hsm li::before{content:"";position:absolute;left:4px;top:9px;width:10px;height:10px;border-radius:50%;border:2px solid var(--hood-line);background:var(--hood-bg)}
+.hsm li::after{content:"";position:absolute;left:8px;top:21px;bottom:-9px;width:2px;background:var(--hood-line)}.hsm li:last-child::after{display:none}
+.hsm li.done{color:var(--hood-fg)}.hsm li.done::before{background:var(--hood-ok);border-color:var(--hood-ok)}.hsm li.done::after{background:var(--hood-ok)}
+.hsm li.active{color:var(--hood-fg);font-weight:700}.hsm li.active::before{background:var(--hood-acc);border-color:var(--hood-acc);animation:pulse 1.4s infinite}
+.hsm li.warn{color:var(--hood-warn)}.hsm li.warn::before{background:var(--hood-warn);border-color:var(--hood-warn)}
+.hsm li.sub{margin-left:18px;font-size:11px}.hsm li.sub::before{width:8px;height:8px;left:5px;top:10px;border-style:dashed}
+.hbr{display:flex;gap:8px;margin-top:8px}.hbr span{flex:1;text-align:center;padding:4px;border:1px dashed var(--hood-line);border-radius:6px;color:var(--hood-mute)}
+.hbr span.on{border-style:solid;font-weight:700}.hbr span.on.bad{color:var(--hood-bad);border-color:var(--hood-bad)}.hbr span.on.warn{color:var(--hood-warn);border-color:var(--hood-warn)}
+.hep{display:inline-block;margin:6px 6px 0 0;padding:1px 8px;border-radius:6px;border:1px solid var(--hood-line);color:var(--hood-mute)}
+.hep.w{color:var(--hood-warn);border-color:var(--hood-warn)}.hep.g{color:var(--hood-ok);border-color:var(--hood-ok)}.hep.b{color:var(--hood-bad);border-color:var(--hood-bad)}.hep.a{color:var(--hood-acc);border-color:var(--hood-acc)}
+.hnote{margin-top:8px;padding:4px 8px;border-left:3px solid var(--hood-acc);background:color-mix(in srgb,var(--hood-acc) 10%,transparent)}.hnote.warn{border-color:var(--hood-warn)}
+.htf{list-style:none;margin:0;padding:0;max-height:240px;overflow-y:auto}
+.htf li{display:flex;gap:6px;align-items:baseline;padding:2px 0;border-bottom:1px dashed var(--hood-line)}.htf .l{min-width:0;word-break:break-word}
+.htf li.f .l{color:var(--hood-bad)}.htf li.s .l{color:var(--hood-ok)}
+.htc{font-size:10px;padding:0 6px;border-radius:4px;border:1px solid var(--hood-line);color:var(--hood-mute);flex:none}.htc.durable{color:var(--hood-acc);border-color:var(--hood-acc)}.htc.audit{color:var(--hood-warn);border-color:var(--hood-warn)}
+.hmap{width:100%;height:auto}.hmap rect{fill:var(--hood-card);stroke:var(--hood-line);stroke-width:1.2;rx:5}.hmap line{stroke:var(--hood-line);stroke-width:1.2}
+.hmap text{fill:var(--hood-fg);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}
+.hmap .node.hit rect{stroke:var(--hood-acc);stroke-width:2.5;fill:color-mix(in srgb,var(--hood-acc) 25%,var(--hood-card))}
+@media(min-width:1100px){header{position:sticky;top:0;z-index:20}}
+@media(max-width:1099px){.shell{grid-template-columns:1fr}
+ #hood,#hood.closed{position:static;width:auto;height:auto;border-left:0;border-top:1px solid var(--hood-line);box-shadow:none}
+ .hood-strip{writing-mode:horizontal-tb;transform:none;padding:12px}#hoodBody{max-height:80vh}}
+@media(prefers-reduced-motion:reduce){#hood{transition:none}}
+</style>
+<script>(()=>{let t;try{t=localStorage.theme}catch(e){}if(!t)t=matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t})()</script>
+</head><body>
+<header>
+ <div class="brand"><div class="logo" aria-hidden="true">C</div>
+  <h1>Close Copilot <small>AI agents + durable function + Lambda web function, all local</small></h1></div>
+ <span class="pill" title="Northwind Group">Northwind Group</span>
+ <span class="pill" title="Close period">October 2026</span>
+ <div class="sp"></div>
+ <span class="pill" id="mode" title="Agent brain">agent: ...</span>
+ <span class="pill" id="live"><i class="dot"></i><span>connecting...</span></span>
+ <div class="seg" role="group" aria-label="Role">
+  <button id="r-acc" aria-pressed="true" onclick="setRole('Accountant')">Accountant</button>
+  <button id="r-con" aria-pressed="false" onclick="setRole('Controller')">Controller</button></div>
+ <button class="hoodbtn" id="hoodBtn" aria-expanded="false" aria-controls="hood" title="Show what is running in LocalStack" onclick="toggleHood()">🔍 Under the hood</button>
+ <button class="theme" id="theme" title="Toggle dark / light mode" aria-label="Toggle theme" onclick="toggleTheme()"></button>
+</header>
+<div class="shell">
 <main>
- <section>
-  <div class="card"><h2>New purchase request</h2>
-   <textarea id="text" placeholder="Describe what you need, in plain English"></textarea>
-   <div>
-    <button class="ex" onclick="ex(0)">auto-approve</button><button class="ex" onclick="ex(1)">needs human</button><button class="ex" onclick="ex(2)">blocked vendor</button><button class="ex" onclick="ex(3)">over limit</button>
+ <aside>
+  <div class="card"><h2>Close</h2>
+   <button id="start" style="width:100%" onclick="startClose()">Start October close</button>
+   <div id="runCard" style="margin-top:12px"></div></div>
+  <details class="card drawer" id="chaosBox" open><summary><h2>Chaos (Simulation)</h2></summary>
+   <div class="col" style="margin-top:10px">
+    <button class="ghost" onclick="chaos({killSandbox:1})">Kill sandbox once</button>
+    <button class="ghost" onclick="chaos({erpFailures:2})">ERP times out twice</button>
+    <button class="ghost" id="erpDown" aria-pressed="false" onclick="chaos({erpDown:!(snap&&snap.chaos&&snap.chaos.erpDown)})">ERP down</button>
+    <button class="ghost" id="deliver" onclick="deliverFeed('DE')" hidden>Deliver DE bank feed</button>
    </div>
-   <label class="chk"><input id="flaky" type="checkbox"> flaky ERP (times out twice)</label>
-   <button onclick="submitReq()">Submit to agent</button></div>
-  <div class="card"><h2>Department budgets</h2><div id="budgets"></div></div>
+   <div class="chips" id="chaosChips" aria-live="polite"></div></details>
+ </aside>
+ <section>
+  <div id="banner"></div><div id="inbox"></div>
+  <div class="card">
+   <div class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="t-overview" onclick="setTab('overview')">Overview</button>
+    <button role="tab" id="t-notebook" onclick="setTab('notebook')">Agent notebook</button>
+    <button role="tab" id="t-journals" onclick="setTab('journals')">Journals</button>
+    <button role="tab" id="t-audit" onclick="setTab('audit')">Audit</button>
+    <button role="tab" id="t-logs" onclick="setTab('logs')">Logs</button></div>
+   <div id="panel" role="tabpanel"></div></div>
  </section>
- <section id="reqs"></section>
 </main>
+<aside id="hood" class="closed" aria-label="Under the hood: LocalStack resources and state">
+ <button class="hood-strip" id="hoodStrip" aria-expanded="false" aria-controls="hoodBody" onclick="setHood(true)">Under the hood</button>
+ <div id="hoodBody" hidden>
+  <div class="hh"><b>Under the hood</b><button class="hx" aria-label="Collapse the Under the hood panel" onclick="setHood(false)">×</button></div>
+  <div class="hsub">What this app is really running on, inside LocalStack</div>
+  <div class="hconn" id="hoodConn" aria-live="polite"><i class="sd"></i><span>connecting to LocalStack...</span></div>
+  <details class="hc" open><summary>AWS resources in LocalStack</summary><div class="hb" id="hRes"><div class="hskel">connecting to LocalStack...</div></div></details>
+  <details class="hc" open><summary>Workflow state</summary><div class="hb" id="hWf"></div></details>
+  <details class="hc" open><summary>State transitions</summary><div class="hb"><ul class="htf" id="hTrans" aria-label="State transitions, newest first"></ul></div></details>
+  <details class="hc" open><summary>Service map</summary><div class="hb"><svg class="hmap" viewBox="0 0 340 210" role="img" aria-label="Service map: the web function starts the workflow durable function, which calls AgentCore, the sandbox, DynamoDB and S3, and publishes to SNS, then SQS, then the notifier">
+   <defs><marker id="ar" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L6 3L0 6z" style="fill:var(--hood-mute)"/></marker></defs>
+   <g marker-end="url(#ar)"><line x1="66" y1="87" x2="98" y2="87"/><line x1="178" y1="80" x2="234" y2="19"/><line x1="178" y1="84" x2="234" y2="53"/><line x1="178" y1="87" x2="234" y2="89"/><line x1="178" y1="92" x2="234" y2="125"/>
+    <line x1="139" y1="100" x2="127" y2="168"/><line x1="152" y1="183" x2="164" y2="183"/><line x1="218" y1="183" x2="230" y2="183"/></g>
+   <g class="node" id="n-web"><rect x="4" y="74" width="62" height="26"/><text x="35" y="91" text-anchor="middle">Web fn</text></g>
+   <g class="node" id="n-wf"><rect x="100" y="74" width="78" height="26"/><text x="139" y="91" text-anchor="middle">Workflow</text></g>
+   <g class="node" id="n-agent"><rect x="236" y="4" width="100" height="26"/><text x="286" y="21" text-anchor="middle">AgentCore</text></g>
+   <g class="node" id="n-sbx"><rect x="236" y="40" width="100" height="26"/><text x="286" y="57" text-anchor="middle">Sandbox</text></g>
+   <g class="node" id="n-ddb"><rect x="236" y="76" width="100" height="26"/><text x="286" y="93" text-anchor="middle">DynamoDB</text></g>
+   <g class="node" id="n-s3"><rect x="236" y="112" width="100" height="26"/><text x="286" y="129" text-anchor="middle">S3</text></g>
+   <g class="node" id="n-sns"><rect x="100" y="170" width="52" height="26"/><text x="126" y="187" text-anchor="middle">SNS</text></g>
+   <g class="node" id="n-sqs"><rect x="166" y="170" width="52" height="26"/><text x="192" y="187" text-anchor="middle">SQS</text></g>
+   <g class="node" id="n-notif"><rect x="232" y="170" width="104" height="26"/><text x="284" y="187" text-anchor="middle">Notifier</text></g></svg></div></details>
+ </div>
+</aside>
+</div>
 <script>
-const $=s=>document.querySelector(s), money=c=>'$'+(c/100).toLocaleString('en-US',{maximumFractionDigits:0});
-const EX=["Need 5 laptops for the new data engineering hires, around $12k, from Dell.",
-"Replace the core network switches in the datacenter, about $38k from Cisco Systems.",
-"Marketing wants a $9k booth giveaway order from ShadyCorp, urgent.",
-"We want to buy $80k of servers from Dell for the engineering team."];
-const ex=i=>$('#text').value=EX[i];
-async function submitReq(){const text=$('#text').value;if(!text)return;
- await fetch('/api/requests',{method:'POST',body:JSON.stringify({text,flaky:$('#flaky').checked})});$('#text').value='';refresh()}
-async function decide(id,approved){await fetch(`/api/requests/${id}/decision`,{method:'POST',body:JSON.stringify({approved})});refresh()}
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const cls=s=>String(s||'').replace(/\W/g,'');
+const ENTS=['US','DE','UK'], TYPES=['timing','duplicate','fee','fx','unexplained'];
+const fmt=(c,cur='USD')=>{try{return new Intl.NumberFormat('en-US',{style:'currency',currency:cur}).format((c||0)/100)}catch(e){return (c/100).toFixed(2)+' '+cur}};
+const pct=x=>Math.round((x||0)*100)+'%';
+const time=t=>t?new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):'';
+let snap=null, role='Accountant', tab='overview', filt='All', selId=null, busy=false;
+const openSet=new Set();
+try{role=localStorage.role||role;tab=localStorage.tab||tab}catch(e){}
+
+// ---- theme
+const setTheme=t=>{document.documentElement.dataset.theme=t;$('#theme').textContent=t=='dark'?'☀️':'🌙';try{localStorage.theme=t}catch(e){}};
+const toggleTheme=()=>setTheme(document.documentElement.dataset.theme=='dark'?'light':'dark');
+setTheme(document.documentElement.dataset.theme);
+
+// ---- actions
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
+ try{return await r.json()}catch(e){return {}}}
+async function startClose(){const b=$('#start');b.disabled=true;try{const r=await post('/api/close',{period:'2026-10'});if(r.closeId)selId=r.closeId}finally{b.disabled=false}}
+async function decide(approved){if(busy||!cur())return;busy=true;render();
+ try{await post(`/api/closes/${encodeURIComponent(cur().closeId)}/decision`,{approved,approver:'Dana Whitfield, Controller'})}finally{busy=false;render()}}
+async function chaos(p){const r=await post('/api/chaos',p);if(snap&&r&&typeof r==='object'&&!r.error){snap.chaos=Object.assign({},snap.chaos,r);renderSide()}}
+async function deliverFeed(e){await post(`/api/feeds/${e}/deliver`)}
+function setRole(r){role=r;try{localStorage.role=r}catch(e){}render()}
+function setTab(t){tab=t;try{localStorage.tab=t}catch(e){}render()}
+function setFilt(f){filt=f;renderPanel()}
+function selRun(id){selId=id;render()}
+
+// ---- data helpers
+const cur=()=>{const rs=(snap&&snap.runs)||[];return rs.find(r=>r.closeId===selId)||rs[0]||null};
+// Which of Feed/Reconcile/Draft/Approve/Post is active, and how.
+function steps(ent,run){
+ const st=ent.status, rs=run.status;
+ let a=0,kind='active';
+ if(st==='WAITING_FEED'){a=0;kind='wait'}
+ else if(st==='PENDING'){a=0}
+ else if(st==='RECONCILING'){a=1}
+ else if(st==='BLOCKED'){a=2;kind='bad'}
+ else if(st==='DRAFTED'||st==='DONE'){
+  a=3;
+  if(rs==='POSTING'||rs==='ERP_RETRY'){a=4}
+  else if(rs==='CLOSED'){a=5}
+  else if(rs==='ROLLED_BACK'){a=4;kind='bad'}
+  else if(rs==='REJECTED'){a=3;kind='bad'}
+  else if(st==='DONE'){a=5}
+ }
+ return ['Feed','Reconcile','Draft','Approve','Post'].map((n,i)=>({n,c:i<a?'done':i===a?kind:''}));
+}
+const analysisOf=(run,e)=>(run.analysis||{})[e]||null;
+
+// ---- render
+function render(){
+ for(const t of['overview','notebook','journals','audit','logs']){const b=$('#t-'+t);b.setAttribute('aria-selected',String(tab===t))}
+ $('#r-acc').setAttribute('aria-pressed',String(role==='Accountant'));$('#r-con').setAttribute('aria-pressed',String(role==='Controller'));
+ renderSide();renderBanner();renderPanel();renderHood();
+}
+function renderSide(){
+ const run=cur(), ch=(snap&&snap.chaos)||{}, held=(snap&&snap.heldFeeds)||[];
+ $('#mode').textContent='agent: '+((snap&&snap.agentMode)||'...');
+ $('#erpDown').setAttribute('aria-pressed',String(!!ch.erpDown));
+ $('#erpDown').textContent=ch.erpDown?'ERP down (click to restore)':'ERP down';
+ $('#deliver').hidden=!held.includes('DE');
+ const chips=[];
+ if(ch.killSandbox)chips.push(`sandbox kill armed x${ch.killSandbox}`);
+ if(ch.erpFailures)chips.push(`ERP fails x${ch.erpFailures}`);
+ if(ch.erpDown)chips.push('ERP down');
+ held.forEach(e=>chips.push(`${e} bank feed held`));
+ $('#chaosChips').innerHTML=chips.length?chips.map(c=>`<span class="chip on">${esc(c)}</span>`).join(''):'<span class="small mute">no chaos armed</span>';
+ const rs=(snap&&snap.runs)||[];
+ $('#runCard').innerHTML=!run?'<div class="small mute">No close running yet.</div>':
+  `<div class="row" style="justify-content:space-between"><b>${esc(run.closeId)}</b><span class="badge b-${cls(run.status)}">${esc(run.status)}</span></div>
+   <div class="small mute" style="margin-top:4px">${esc(run.detail||'')}</div>
+   ${rs.length>1?`<div class="chips">${rs.map(r=>`<button class="ghost small" style="padding:2px 8px" aria-pressed="${r.closeId===run.closeId}" onclick="selRun(${esc(JSON.stringify(r.closeId))})">${esc(r.closeId)}</button>`).join('')}</div>`:''}`;
+}
+function renderBanner(){
+ const run=cur(), b=$('#banner'), inb=$('#inbox');
+ if(!run){b.innerHTML='';inb.innerHTML='';return}
+ const s=run.status;
+ b.innerHTML=s==='CLOSED'?`<div class="banner ok">Books closed<small>${esc(run.detail||'October 2026 is closed in all three entities.')}</small></div>`
+  :s==='ROLLED_BACK'?`<div class="banner warn">ERP failed: journals reversed by saga<small>${esc(run.detail||'')}</small></div>`
+  :s==='REJECTED'?`<div class="banner bad">Close rejected<small>${esc(run.detail||'')}</small></div>`:'';
+ if(s!=='AWAITING_APPROVAL'){inb.innerHTML='';return}
+ const js=run.journals||[], blocked=js.filter(j=>j.status==='BLOCKED').length, ap=run.approval||{};
+ inb.innerHTML=`<div class="card inbox"><h2>${role==='Controller'?'Approval inbox':'Awaiting controller sign-off'}</h2>
+  <div class="stats"><div class="stat"><b>${fmt(run.totalUsdCents)}</b><span class="small mute">total journals (USD)</span></div>
+   <div class="stat"><b>${js.length}</b><span class="small mute">journal entries</span></div>
+   <div class="stat"><b style="color:${blocked?'var(--bad)':'inherit'}">${blocked}</b><span class="small mute">blocked by policy</span></div></div>
+  ${ap.reason?`<p>${esc(ap.reason)}</p>`:''}
+  ${role==='Controller'?`<div class="row"><button class="ok" ${busy?'disabled':''} onclick="decide(true)">Approve</button><button class="no" ${busy?'disabled':''} onclick="decide(false)">Reject</button></div>`
+   :`<p class="small mute">Switch to the Controller role to review and approve. The workflow is paused and uses no compute.</p>`}</div>`;
+}
+function renderPanel(){
+ const run=cur(), p=$('#panel');
+ if(tab==='logs')return renderLogs(p);
+ if(!run){p.innerHTML='<div class="empty">Start the October close to watch the agents work.</div>';return}
+ if(tab==='notebook')return renderNotebook(run,p);
+ p.innerHTML=tab==='journals'?journalsHtml(run):tab==='audit'?auditHtml(run):overviewHtml(run);
+}
+function ring(v){const r=26,c=2*Math.PI*r;return `<div class="ring"><svg width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="match rate ${pct(v)}"><circle cx="32" cy="32" r="${r}" fill="none" stroke="var(--line)" stroke-width="7"/><circle cx="32" cy="32" r="${r}" fill="none" stroke="var(--ok)" stroke-width="7" stroke-linecap="round" stroke-dasharray="${(c*(v||0)).toFixed(1)} ${c.toFixed(1)}"/></svg><b>${v?pct(v):'-'}</b></div>`}
+function overviewHtml(run){
+ const ents=run.entities||{};
+ const cards=ENTS.map(e=>{const en=ents[e]||{status:'PENDING',currency:'',step:''},an=analysisOf(run,e),mr=an?an.matchRate:en.matchRate;
+  const sub=en.status==='WAITING_FEED'?'waiting for bank feed (zero compute)':(en.step||'');
+  return `<div class="ent"><header><div><b>${e}</b> <span class="mute small">${esc(en.currency)}</span><div class="small ${en.status==='WAITING_FEED'?'':'mute'}" style="${en.status==='WAITING_FEED'?'color:var(--warn)':''}">${esc(sub)}</div></div>${ring(mr)}</header>
+   <div class="small mute">${esc(en.matched??(an&&an.matched)??0)} matched / ${esc(en.unmatched??0)} exceptions</div>
+   <ol class="steps" aria-label="${e} workflow">${steps(en,run).map(s=>`<li class="${s.c}">${s.n}</li>`).join('')}</ol></div>`}).join('');
+ return `<div class="ents">${cards}</div><div class="charts">${excChart(run)}${matchChart(run)}</div>`;
+}
+function excChart(run){
+ const rows=ENTS.map(e=>({e,bt:(analysisOf(run,e)||{}).byType||{}})), tot=r=>TYPES.reduce((s,t)=>s+(r.bt[t]||0),0);
+ const max=Math.max(1,...rows.map(tot)), W=360, x0=34, bw=W-x0-34;
+ let y=8,body='';
+ rows.forEach(r=>{let x=x0;body+=`<text x="0" y="${y+14}">${r.e}</text>`;
+  TYPES.forEach(t=>{const n=r.bt[t]||0;if(!n)return;const w=bw*n/max;body+=`<rect x="${x}" y="${y}" width="${w.toFixed(1)}" height="20" rx="3" fill="var(--c-${t})"><title>${r.e} ${t}: ${n}</title></rect>`+(w>16?`<text x="${(x+w/2).toFixed(1)}" y="${y+14}" text-anchor="middle" style="fill:#fff;font-weight:700">${n}</text>`:'');x+=w});
+  body+=`<text class="m" x="${x+6}" y="${y+14}">${tot(r)}</text>`;y+=30});
+ const sum=rows.map(r=>`${r.e}: ${tot(r)} exceptions`).join(', ');
+ return `<div><h2>Exceptions by type</h2><svg viewBox="0 0 ${W} ${y}" width="100%" role="img" aria-label="Exceptions by type. ${esc(sum)}">${body}</svg>
+  <div class="legend">${TYPES.map(t=>`<span><i style="background:var(--c-${t})"></i>${t}</span>`).join('')}</div></div>`;
+}
+function matchChart(run){
+ const W=360,x0=34,bw=W-x0-44;let y=8,body='',sum=[];
+ ENTS.forEach(e=>{const an=analysisOf(run,e),v=an?an.matchRate:((run.entities||{})[e]||{}).matchRate||0;sum.push(`${e} ${pct(v)}`);
+  body+=`<text x="0" y="${y+14}">${e}</text><rect x="${x0}" y="${y}" width="${bw}" height="20" rx="3" fill="var(--inset)" stroke="var(--line)"/>
+  <rect x="${x0}" y="${y}" width="${(bw*v).toFixed(1)}" height="20" rx="3" fill="var(--ok)"><title>${e}: ${pct(v)}</title></rect><text class="m" x="${x0+bw+6}" y="${y+14}">${pct(v)}</text>`;y+=30});
+ return `<div><h2>Match rate</h2><svg viewBox="0 0 ${W} ${y}" width="100%" role="img" aria-label="Match rate per entity. ${esc(sum.join(', '))}">${body}</svg></div>`;
+}
+function journalsHtml(run){
+ const js=run.journals||[];if(!js.length)return '<div class="empty">No journal entries drafted yet.</div>';
+ return `<div class="tbl"><table><thead><tr><th>Entity</th><th>Description</th><th>Debit</th><th>Credit</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>${js.map(j=>
+  `<tr class="${cls(j.status)}"><td>${esc(j.entity)}</td><td class="d">${esc(j.description)}${j.reason?`<span class="why">${esc(j.reason)}</span>`:''}</td><td>${esc(j.debitAccount)}</td><td>${esc(j.creditAccount)}</td><td class="num">${fmt(j.amountCents,j.currency||'USD')}</td><td><span class="badge b-${cls(j.status)}">${esc(j.status)}</span></td></tr>`).join('')}</tbody></table></div>`;
+}
 const evc=t=>/Failed|Timed/.test(t)?'f':/Succeeded/.test(t)?'s':'';
-async function refresh(){
- const [reqs,budgets]=await Promise.all([fetch('/api/requests').then(r=>r.json()),fetch('/api/budgets').then(r=>r.json())]);
- $('#budgets').innerHTML=budgets.map(b=>`<div>${b.department} <span class="note">${money(b.remaining_cents)} / ${money(b.total_cents)}</span><div class="bar"><i style="width:${100*b.remaining_cents/b.total_cents}%"></i></div></div>`).join('');
- $('#reqs').innerHTML=reqs.map(o=>`<div class="card"><div class="head"><b>${o.requestId}</b><span class="badge ${o.status}">${o.status}</span></div>
-  <p>${o.text}</p>${o.detail?`<div class="note">${o.detail}</div>`:''}
-  ${o.status=='AWAITING_APPROVAL'?`<p>Approver needed: <button class="ok" onclick="decide('${o.requestId}',true)">Approve</button> <button class="no" onclick="decide('${o.requestId}',false)">Reject</button></p>`:''}
-  ${(o.trace||[]).map(t=>`<div class="tr ${t.kind}">${t.kind=='llm'?'🧠':t.kind=='tool'?'🔧':'⚖️'} ${t.text}</div>`).join('')}
-  <div class="tl">${(o.timeline||[]).filter(e=>!/Started$/.test(e.type)).map(e=>`<span class="ev ${evc(e.type)}">${e.type}${e.name?': '+e.name:''}</span>`).join('')}</div>
-  ${(o.notifications||[]).map(n=>`<div class="note">📧 ${n.text}</div>`).join('')}</div>`).join('')||'<p class="note">No requests yet.</p>'}
-refresh();setInterval(refresh,2000);
+function auditHtml(run){
+ const au=run.audit||[], tl=(run.timeline||[]).filter(e=>!/Started$/.test(e.type)), nt=run.notifications||[];
+ return `<h2>Audit trail</h2>${au.length?`<ul class="audit">${au.map(a=>`<li><span class="mute small">${time(a.at)}</span> <b>${esc(a.actor)}</b> ${esc(a.event)}</li>`).join('')}</ul>`:'<div class="empty">No audit events yet.</div>'}
+ ${nt.length?`<h2 style="margin-top:16px">Notifications</h2>${nt.map(n=>`<div class="small">📧 ${esc(n.text)}</div>`).join('')}`:''}
+ <h2 style="margin-top:16px">Durable execution timeline</h2><div class="chips">${tl.map(e=>`<span class="chip ${evc(e.type)}">${esc(e.type)}${e.name?': '+esc(e.name):''}</span>`).join('')||'<span class="small mute">no events yet</span>'}</div>`;
+}
+function renderNotebook(run,p){
+ const old=$('#nb'), atBottom=!old||old.scrollHeight-old.scrollTop-old.clientHeight<40, top=old?old.scrollTop:0;
+ const tr=(run.trace||[]).map((t,i)=>({...t,i})).filter(t=>filt==='All'||t.entity===filt||!t.entity);
+ const tabs=['All',...ENTS].map(f=>`<button class="ghost" style="padding:4px 12px" aria-pressed="${filt===f}" onclick="setFilt('${f}')">${f}</button>`).join(' ');
+ p.innerHTML=`<div class="row" style="margin-bottom:10px">${tabs}<span class="small mute">${tr.length} steps</span></div><div id="nb" tabindex="0" aria-label="Agent trace" aria-live="off">${tr.map(msg).join('')||'<div class="empty">Waiting for the agents...</div>'}</div>`;
+ const nb=$('#nb');nb.scrollTop=atBottom?nb.scrollHeight:top;
+}
+function msg(t){
+ const k=['llm','tool','sandbox','guardrail','system'].includes(t.kind)?t.kind:'system', tag=t.entity?`<span class="tag">${esc(t.entity)}</span>`:'';
+ const icon={llm:'🧠',tool:'🔧',sandbox:'⌨️',guardrail:'⚖️',system:'•'}[k], key=`m${t.i}`;
+ let inner;
+ if(k==='tool'){const first=String(t.text||'').split('\n')[0].slice(0,90);
+  inner=`<details data-k="${key}" ${openSet.has(key)?'open':''}><summary>${tag}<b>${esc(first)}</b> <span class="mute small">details</span></summary><pre class="out">${esc(t.text)}</pre></details>`}
+ else if(k==='sandbox'){inner=`${tag}<span class="small mute">sandbox run</span>${t.code?`<pre aria-label="code cell">${esc(t.code)}</pre>`:''}${t.text?`<pre class="out" aria-label="output">${esc(t.text)}</pre>`:''}`}
+ else if(k==='guardrail'){inner=`${tag}<div class="gl">policy overrides agent</div>${esc(t.text)}`}
+ else inner=`${tag}${esc(t.text)}`;
+ return `<div class="msg ${k}"><div class="av" aria-hidden="true">${icon}</div><div class="bub">${inner}</div></div>`;
+}
+document.addEventListener('toggle',e=>{const k=e.target.dataset&&e.target.dataset.k;if(k)e.target.open?openSet.add(k):openSet.delete(k)},true);
+
+// ---- live updates (Server-Sent Events; EventSource reconnects on its own)
+const es=new EventSource('/api/stream');
+es.addEventListener('snapshot',e=>{$('#live').className='pill live';$('#live').lastChild.textContent='live (SSE)';try{snap=JSON.parse(e.data)}catch(x){return}render()});
+es.onerror=()=>{$('#live').className='pill';$('#live').lastChild.textContent='reconnecting...'};
+
+// ---- Lambda logs: a second SSE stream (CloudWatch Logs of workflow, sandbox, notifier)
+const LOGMAX=600;let logBuf=[],logFilt='all';
+const logHtml=l=>`<div class="${esc(l.level)}"><span class="t">${new Date(l.ts).toLocaleTimeString()}</span> <span class="f ${esc(l.fn)}">${esc(l.fn)}</span> ${esc(l.text)}</div>`;
+function renderLogs(p){
+ if(!$('#lg')){
+  const fs=['all','workflow','sandbox','notifier'].map(f=>`<button class="ghost" style="padding:4px 12px" data-f="${f}" aria-pressed="${logFilt===f}" onclick="setLogFilt('${f}')">${f}</button>`).join(' ');
+  p.innerHTML=`<div class="row" style="margin-bottom:10px">${fs}<span class="small mute">Lambda logs from CloudWatch, streamed live</span></div><div id="lg" class="lg" tabindex="0" role="log" aria-label="Lambda logs"></div>`;
+  fillLogs(true);
+ }
+}
+function fillLogs(stick){const lg=$('#lg');if(!lg)return;lg.innerHTML=logBuf.filter(l=>logFilt==='all'||l.fn===logFilt).map(logHtml).join('')||'<div class="mute">Waiting for log output...</div>';if(stick)lg.scrollTop=lg.scrollHeight}
+function setLogFilt(f){logFilt=f;document.querySelectorAll('[data-f]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.f===f)));fillLogs(true)}
+const les=new EventSource('/api/logs');
+les.addEventListener('logs',e=>{let b;try{b=JSON.parse(e.data)}catch(x){return}
+ logBuf=logBuf.concat(b).slice(-LOGMAX);const lg=$('#lg');if(!lg||tab!=='logs')return;
+ const stick=lg.scrollHeight-lg.scrollTop-lg.clientHeight<40;
+ if(lg.firstChild&&lg.firstChild.className==='mute')lg.innerHTML='';
+ lg.insertAdjacentHTML('beforeend',b.filter(l=>logFilt==='all'||l.fn===logFilt).map(logHtml).join(''));
+ while(lg.childElementCount>LOGMAX)lg.removeChild(lg.firstChild);
+ if(stick)lg.scrollTop=lg.scrollHeight});
+
+// ---- Under the hood: LocalStack resources (own SSE stream), workflow state machine, state transitions
+const HOOD_KEY='hood';
+const mq=q=>typeof matchMedia==='function'&&matchMedia(q).matches;
+let hoodOpen=innerWidth>=1500, infra=null, infraEs=null, hoodSig={}, prevK={}, mapPrev={};
+try{const v=localStorage.getItem(HOOD_KEY);if(v!==null)hoodOpen=v==='1'}catch(e){}
+const num=v=>typeof v==='number'&&isFinite(v)?v:null, showN=v=>num(v)===null?'n/a':String(v);
+function measureHdr(){const h=document.querySelector('header');document.documentElement.style.setProperty('--hdr',(mq('(min-width:1100px)')&&h?h.offsetHeight:0)+'px')}
+addEventListener('resize',measureHdr);
+if(typeof ResizeObserver!=='undefined')new ResizeObserver(measureHdr).observe(document.querySelector('header'));
+measureHdr();
+
+function setHood(open,persist=true){
+ hoodOpen=open;
+ $('#hood').classList.toggle('closed',!open);$('#hoodBody').hidden=!open;$('#hoodStrip').hidden=open;
+ $('#hoodBtn').setAttribute('aria-expanded',String(open));$('#hoodStrip').setAttribute('aria-expanded',String(open));
+ if(persist)try{localStorage.setItem(HOOD_KEY,open?'1':'0')}catch(e){}
+ if(open){hoodSig={};mapPrev={};startInfra();renderHood();if(infra)renderInfra()}else stopInfra();
+}
+const toggleHood=()=>setHood(!hoodOpen);
+function startInfra(){
+ if(infraEs||typeof EventSource==='undefined')return;
+ infraEs=new EventSource('/api/infra');
+ infraEs.addEventListener('infra',e=>{let d;try{d=JSON.parse(e.data)}catch(x){return}infra=d;hoodConn(true);renderInfra()});
+ infraEs.onerror=()=>hoodConn(false);
+}
+function stopInfra(){if(infraEs){infraEs.close();infraEs=null}}
+function hoodConn(ok){
+ const t=ok?`live · updated ${time(infra&&infra.at||Date.now())}`:(infra?'reconnecting...':'connecting to LocalStack...');
+ $('#hoodConn').innerHTML=`<i class="sd ${ok?'ok':'warn'}"></i><span>${esc(t)}</span>`;
+}
+
+// A: AWS resources. The content is rebuilt only when the data changed (not on every tick); the <details> shells are static.
+function renderInfra(){
+ const d=infra||{}, sig=JSON.stringify({...d,at:0});
+ if(hoodSig.res===sig)return;hoodSig.res=sig;
+ const keys={}, v=(k,val)=>{const s=showN(val);keys[k]=s;return `<b data-k="${esc(k)}">${esc(s)}</b>`};
+ const grp=(svc,name)=>`<div class="hg"><span class="svc">${esc(svc)}</span>${esc(name)}</div>`, na='<div class="hr hm">n/a</div>';
+ let h=grp('λ','Lambda functions');
+ h+=Array.isArray(d.lambdas)?(d.lambdas.map(f=>{const st=String(f.state||''), c=/active/i.test(st)?'ok':/fail/i.test(st)?'bad':'warn';
+  return `<div class="hr"><i class="sd ${c}" title="${esc(st||'unknown')}"></i><span>${esc(f.name)}</span><span class="kd ${cls(f.kind)}">${esc(f.kind||'?')}</span><span class="hm">${esc(f.runtime||'')}${num(f.memoryMb)!==null?' · '+esc(f.memoryMb)+' MB':''}</span></div>`}).join('')||na):na;
+ h+=grp('⏳','Durable executions');
+ const du=d.durable;
+ h+=du&&typeof du==='object'?'<div>'+['RUNNING','SUCCEEDED','FAILED','STOPPED','TIMED_OUT'].map(k=>{const n=num(du[k]);
+  const c=k==='RUNNING'&&n>0?'hot':(k==='FAILED'||k==='TIMED_OUT')&&n>0?'bad':'';return `<span class="hp ${c}">${esc(k.replace('_',' ').toLowerCase())} ${v('dur.'+k,du[k])}</span>`}).join('')+'</div>':na;
+ h+=grp('DDB','DynamoDB tables (items)');
+ h+=Array.isArray(d.dynamodb)?(d.dynamodb.map(t=>`<div class="hr"><span>${esc(t.table)}</span>${v('ddb.'+t.table,t.items)}</div>`).join('')||na):na;
+ h+=grp('S3','S3 bucket');
+ const s3=d.s3;
+ h+=s3&&typeof s3==='object'?`<div class="hr"><span>${esc(s3.bucket||'n/a')}</span><span class="hm">${v('s3.total',s3.total)} objects</span></div>`+
+  ['feeds','staging','packages'].map(p=>{const c=(s3.prefixes||{})[p];
+   return `<div class="hr sub"><span>${p}/</span>${p==='staging'&&num(c)>0?'<span class="kd held">held feed</span>':''}${v('s3.'+p,c)}</div>`}).join(''):na;
+ h+=grp('SNS','SNS and SQS');
+ const q=d.sqs, tp=d.sns;
+ h+=(tp&&typeof tp==='object'?`<div class="hr"><span>topic</span><span class="hm">${esc(tp.topic||'n/a')}</span></div>`:'')+
+  (q&&typeof q==='object'?`<div class="hr"><span>${esc(q.queue||'queue')}</span><span class="hm">visible ${v('sqs.v',q.visible)} · in flight ${v('sqs.f',q.inFlight)}</span></div>`:'')||na;
+ h+=grp('AC','Bedrock AgentCore');
+ const a=d.agentcore;
+ if(a&&typeof a==='object'){const id=String(a.runtimeArn||'').split('/').pop(), short=id.length>14?'…'+id.slice(-12):id;
+  h+=`<div class="hr"><span title="${esc(a.runtimeArn||'')}">${esc(short||'n/a')}</span><span class="kd">${esc(a.mode||(snap&&snap.agentMode)||'?')}</span></div>`}else h+=na;
+ $('#hRes').innerHTML=h;
+ document.querySelectorAll('#hRes [data-k]').forEach(n=>{const k=n.dataset.k;if(k in prevK&&prevK[k]!==keys[k])n.classList.add('flash')});
+ prevK=keys;
+ const sum=(Array.isArray(d.dynamodb)?d.dynamodb:[]).reduce((s,t)=>s+(num(t.items)||0),0);
+ track('ddb',sum,'ddb');track('s3',s3&&s3.total,'s3');track('sqs',q&&`${q.visible}:${q.inFlight}`,'sqs');track('dur',du&&JSON.stringify(du),'wf');
+}
+
+// B: workflow state machine for the current run, per-entity states, callback and armed simulation
+const WF_MAIN=[['STARTED / RECONCILING',['STARTED','WAITING_FEEDS','RECONCILING']],['AWAITING_APPROVAL',['AWAITING_APPROVAL']],['POSTING',['POSTING','ERP_RETRY']],['CLOSED',['CLOSED']]];
+function renderWf(){
+ const run=cur(), ch=(snap&&snap.chaos)||{}, held=(snap&&snap.heldFeeds)||[];
+ const sig=JSON.stringify([run&&run.closeId,run&&run.status,run&&run.callbackId?1:0,run&&Object.entries(run.entities||{}).map(([k,e])=>k+':'+e.status),ch,held]);
+ if(hoodSig.wf===sig)return;hoodSig.wf=sig;
+ const s=run?run.status:'', term=s==='REJECTED'||s==='ROLLED_BACK', doneThrough=s==='REJECTED'?1:s==='ROLLED_BACK'?2:-1;
+ const at=WF_MAIN.findIndex(([,l])=>l.includes(s));
+ const lis=WF_MAIN.map(([label,list],i)=>{
+  let c='';
+  if(term)c=i<=doneThrough?'done':'';
+  else if(at>=0)c=i<at||(i===at&&s==='CLOSED')?'done':i===at?(s==='WAITING_FEEDS'?'active warn':'active'):'';
+  const raw=i===at&&list.length>1?` <span class="hm">${esc(s)}</span>`:'';
+  const sub=i===2?`<li class="sub ${s==='ERP_RETRY'?'active warn':''}">ERP_RETRY <span class="hm">backoff, then retry</span></li>`:'';
+  return `<li class="${c}">${esc(label)}${raw}</li>${sub}`}).join('');
+ const ents=run?Object.entries(run.entities||{}):[];
+ const ep=ents.map(([k,e])=>{const st=String(e.status||''), c=st==='WAITING_FEED'?'w':/^(DRAFTED|DONE)$/.test(st)?'g':st==='BLOCKED'?'b':st==='RECONCILING'?'a':'';
+  return `<span class="hep ${c}">${esc(k)} · ${st==='WAITING_FEED'?'waiting, zero compute':esc(st.toLowerCase())}</span>`}).join('');
+ const arm=[];
+ if(ch.killSandbox)arm.push(`sandbox kill ×${ch.killSandbox}`);if(ch.erpFailures)arm.push(`ERP fails ×${ch.erpFailures}`);if(ch.erpDown)arm.push('ERP down');
+ $('#hWf').innerHTML=(run?'':'<div class="hm" style="text-align:left">No close running. Start the October close.</div>')+
+  `<ol class="hsm" aria-label="Workflow states">${lis}</ol>
+  <div class="hbr"><span class="${s==='REJECTED'?'on bad':''}">REJECTED</span><span class="${s==='ROLLED_BACK'?'on warn':''}">ROLLED_BACK</span></div>
+  ${ep?`<div>${ep}</div>`:''}
+  ${run&&s==='AWAITING_APPROVAL'&&run.callbackId?`<div class="hnote">⏸ durable callback: waiting (no compute) <span class="hm">${esc(String(run.callbackId).slice(0,10))}…</span></div>`:''}
+  ${held.length?`<div class="hnote warn">⏳ bank feed held: ${esc(held.join(', '))}</div>`:''}
+  ${arm.length?`<div class="hnote warn">⚡ simulation armed: ${esc(arm.join(', '))}</div>`:''}`;
+}
+
+// C: state transitions, newest first. Derived from the current run only (so it can never accumulate duplicates).
+function transItems(run){
+ const m=new Map();
+ for(const e of run.timeline||[]){if(/Started$/.test(e.type||''))continue;
+  const k=`d|${e.type}|${e.name||''}|${e.at}`;
+  m.set(k,{k,t:Date.parse(e.at)||0,kind:'durable',label:(e.type||'')+(e.name?': '+e.name:''),c:/Failed|Timed/.test(e.type||'')?'f':/Succeeded/.test(e.type||'')?'s':''})}
+ for(const a of run.audit||[]){const k=`a|${a.at}|${a.actor}|${a.event}`;m.set(k,{k,t:Number(a.at)||0,kind:'audit',label:`${a.actor}: ${a.event}`,c:''})}
+ return [...m.values()].sort((x,y)=>y.t-x.t||(x.k<y.k?1:-1)).slice(0,60);
+}
+function renderTrans(){
+ const run=cur(), items=run?transItems(run):[], sig=(run?run.closeId:'')+'\n'+items.map(i=>i.k).join('\n');
+ if(hoodSig.tr===sig)return;hoodSig.tr=sig;
+ const box=$('#hTrans'), top=box.scrollTop, before=box.scrollHeight;
+ box.innerHTML=items.map(i=>`<li class="${i.c}"><span class="hm" style="margin:0">${esc(time(i.t))}</span><span class="htc ${i.kind}">${i.kind}</span><span class="l">${esc(i.label)}</span></li>`).join('')||'<li class="hm" style="text-align:left">no transitions yet</li>';
+ if(top>4)box.scrollTop=top+(box.scrollHeight-before); // keep the reader's place while new items land on top
+}
+
+// D: service map nodes pulse when the related counter changes
+function pulse(id){const n=document.getElementById('n-'+id);if(!n)return;n.classList.add('hit');clearTimeout(n._t);n._t=setTimeout(()=>n.classList.remove('hit'),1300)}
+function track(key,val,node){const v=val===undefined?null:val;if(key in mapPrev&&mapPrev[key]!==v)pulse(node);mapPrev[key]=v}
+function renderHood(){
+ if(!hoodOpen)return;
+ renderWf();renderTrans();
+ const run=cur();
+ if(run){const tr=run.trace||[];
+  track('run',run.closeId,'web');track('st',run.status,'wf');
+  track('llm',tr.filter(t=>t.kind==='llm').length,'agent');track('sbx',tr.filter(t=>t.kind==='sandbox').length,'sbx');
+  track('nt',(run.notifications||[]).length,'notif')}
+}
+setHood(hoodOpen,false);
+render();
 </script></body></html>

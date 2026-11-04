@@ -1,20 +1,25 @@
-"""Procurement Copilot: an AI purchasing agent as ONE durable Lambda function.
+"""Close Copilot: month-end close for three entities, orchestrated by ONE durable Lambda function.
 
-* Every LLM turn and every tool call is a checkpointed `context.step`: after a
-  crash, retry or long human wait the handler replays, but finished LLM calls
-  are NOT re-run (no double billing, no divergent re-reasoning).
-* "AI proposes, policy disposes": the agent's decision is checked against hard
-  rules in code and the stricter outcome wins.
-* Humans stay in the loop through a durable callback (no compute while waiting).
-* Failures after approval are compensated (saga): the budget is released.
+Every entity gets its own AI reconciliation agent. The agent's brain runs as a Bedrock AgentCore Runtime
+(see functions/agent); the code it writes runs in an isolated sandbox function; this function owns the
+loop, the tools, the guardrail and every side effect.
+
+* Every LLM turn and every tool call is a checkpointed `context.step`: after a crash, retry or long
+  wait the handler replays, but finished LLM calls and sandbox runs are NOT repeated.
+* The three entities reconcile in parallel. A missing bank feed parks that entity on a durable wait.
+* "AI proposes, policy disposes": drafted journals are checked against hard rules in code (restricted
+  accounts, sign-off threshold) and the stricter outcome wins.
+* A controller signs off through a durable callback (no compute while waiting).
+* Posting to the ERP retries with backoff; if the ERP stays down, a saga reverses what was posted.
 """
 
 import json
 import os
-import re
 import time
+from decimal import Decimal
 
 import boto3
+from boto3.dynamodb.types import TypeSerializer
 from botocore.config import Config
 from aws_durable_execution_sdk_python import (
     DurableContext,
@@ -26,361 +31,396 @@ from aws_durable_execution_sdk_python.config import CallbackConfig, Duration, Ji
 from aws_durable_execution_sdk_python.exceptions import CallbackError, StepError
 from aws_durable_execution_sdk_python.retries import RetryStrategyConfig, create_retry_strategy
 
+from planner import (
+    ENTITIES, RANK, RECON_CODE, apply_policy, draft_journals, journals_total_usd, money, rule_decision,
+    rule_planner,
+)
+
 ddb = boto3.client("dynamodb")
 s3 = boto3.client("s3")
 sns = boto3.client("sns")
-bedrock = boto3.client("bedrock-runtime", config=Config(read_timeout=90, retries={"max_attempts": 1}))
+lam = boto3.client("lambda", config=Config(read_timeout=120, retries={"max_attempts": 1}))
+agentcore = boto3.client("bedrock-agentcore", config=Config(read_timeout=90, retries={"max_attempts": 1}))
 
-REQUESTS = os.environ["REQUESTS_TABLE"]
-VENDORS = os.environ["VENDORS_TABLE"]
-BUDGETS = os.environ["BUDGETS_TABLE"]
+RUNS = os.environ["RUNS_TABLE"]
+CONFIG = os.environ["CONFIG_TABLE"]
+POSTINGS = os.environ["POSTINGS_TABLE"]
 BUCKET = os.environ["DOCS_BUCKET"]
 TOPIC = os.environ["NOTIFICATIONS_TOPIC"]
-MODEL_MODE = os.environ.get("MODEL_MODE", "rules")  # "bedrock" or "rules"
-MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0")
-APPROVAL_TIMEOUT = int(os.environ.get("APPROVAL_TIMEOUT_SECONDS", "300"))
-AUTO_LIMIT = 15_000_00   # cents: up to here the agent may auto-approve
-MANAGER_LIMIT = 50_000_00  # up to here a human must approve; above is blocked
+SANDBOX = os.environ["SANDBOX_FUNCTION"]
+MODEL_MODE = os.environ.get("MODEL_MODE", "agentcore")  # "agentcore" or "rules"
+AGENT_RUNTIME_ARN = os.environ.get("AGENT_RUNTIME_ARN", "")
+APPROVAL_TIMEOUT = int(os.environ.get("APPROVAL_TIMEOUT_SECONDS", "600"))
+FEED_POLL_SECONDS = int(os.environ.get("FEED_POLL_SECONDS", "4"))
+FEED_MAX_POLLS = 120
 MAX_TURNS = 6
-ERP_FAILURES = 2
-RANK = {"approve": 0, "escalate": 1, "reject": 2}
-
-SYSTEM = """You are a procurement agent. Review the purchase request by calling tools, one per reply.
-Reply with ONLY one JSON object, no prose. Allowed:
-{"action":"lookup_vendor","args":{"vendor":"<name>"}}
-{"action":"check_budget","args":{"department":"engineering|marketing|it|hr","amountCents":<int>}}
-{"action":"check_policy","args":{"amountCents":<int>,"category":"hardware|software|services"}}
-{"action":"final","args":{"decision":"approve|escalate|reject","reason":"<short>","vendor":"<name>","department":"<dept>","amountCents":<int>,"category":"<category>"}}
-Call lookup_vendor, check_budget and check_policy first, then final. Tool results arrive as TOOL_RESULT messages."""
 
 
 class ErpUnavailable(Exception):
     pass
 
 
-erp_retry = create_retry_strategy(
-    RetryStrategyConfig(
-        max_attempts=5,
-        initial_delay=Duration.from_seconds(2),
-        backoff_rate=2.0,
-        jitter_strategy=JitterStrategy.NONE,
-        retryable_error_types=[ErpUnavailable],
-    )
-)
+class SandboxCrashed(Exception):
+    pass
+
+
+def retry(error_type, attempts, delay):
+    return create_retry_strategy(RetryStrategyConfig(
+        max_attempts=attempts, initial_delay=Duration.from_seconds(delay), backoff_rate=2.0,
+        jitter_strategy=JitterStrategy.NONE, retryable_error_types=[error_type]))
+
+
+erp_retry = retry(ErpUnavailable, 4, 2)
+sandbox_retry = retry(SandboxCrashed, 3, 1)
 
 
 # --------------------------------------------------------------- helpers
 
-
-def now_ms() -> str:
-    return str(int(time.time() * 1000))
+_ser = TypeSerializer()
 
 
-def set_status(rid: str, status: str, detail: str | None = None) -> None:
-    sets, names = ["#s = :s", "updatedAt = :u"], {"#s": "status"}
-    vals = {":s": {"S": status}, ":u": {"N": now_ms()}}
+def ser(value) -> dict:
+    return _ser.serialize(json.loads(json.dumps(value), parse_float=Decimal))
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def key(cid: str) -> dict:
+    return {"closeId": {"S": cid}}
+
+
+def set_status(cid: str, status: str, detail: str | None = None) -> None:
+    log(f"{cid} -> {status}" + (f" ({detail})" if detail else ""))
+    sets, vals = ["#s = :s", "updatedAt = :u"], {":s": {"S": status}, ":u": ser(now_ms())}
     if detail is not None:
         sets.append("detail = :d")
         vals[":d"] = {"S": detail}
-    ddb.update_item(
-        TableName=REQUESTS, Key={"requestId": {"S": rid}},
-        UpdateExpression="SET " + ", ".join(sets),
-        ExpressionAttributeNames=names, ExpressionAttributeValues=vals,
-    )
+    ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET " + ", ".join(sets),
+                    ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues=vals)
 
 
-def trace(rid: str, kind: str, text: str) -> None:
-    ddb.update_item(
-        TableName=REQUESTS, Key={"requestId": {"S": rid}},
-        UpdateExpression="SET trace = list_append(if_not_exists(trace, :e), :t)",
-        ExpressionAttributeValues={
-            ":e": {"L": []},
-            ":t": {"L": [{"M": {"kind": {"S": kind}, "text": {"S": text[:400]}}}]},
-        },
-    )
+def append(cid: str, attr: str, entry: dict) -> None:
+    ddb.update_item(TableName=RUNS, Key=key(cid),
+                    UpdateExpression=f"SET {attr} = list_append(if_not_exists({attr}, :e), :t)",
+                    ExpressionAttributeValues={":e": {"L": []}, ":t": {"L": [ser(entry)]}})
 
 
-def money(cents: int) -> str:
-    return f"${cents / 100:,.0f}"
+def log(msg: str) -> None:
+    """Goes to CloudWatch Logs (and the UI's Logs tab). Only called from steps, so a replay never repeats it."""
+    print(msg[:300], flush=True)
 
 
-def rule_decision(results: dict, amount: int) -> tuple[str, str]:
-    """Hard policy. Missing checks mean a human must look."""
-    v, b, p = results.get("lookup_vendor"), results.get("check_budget"), results.get("check_policy")
-    if not (v and b and p):
-        return "escalate", "required checks were skipped by the agent"
-    if not v["approved"]:
-        return "reject", f"vendor '{v['vendor']}' is not on the approved list"
-    if p["tier"] == "blocked":
-        return "reject", f"{money(amount)} exceeds the {money(MANAGER_LIMIT)} purchasing limit"
-    if not b["sufficient"]:
-        return "reject", f"{b['department']} budget has only {money(b['remainingCents'])} left"
-    if p["tier"] == "manager":
-        return "escalate", f"{money(amount)} needs a manager's approval"
-    return "approve", "approved vendor, within budget and auto-approval limit"
+def trace(cid: str, entity: str, kind: str, text: str, code: str | None = None) -> None:
+    log(f"[{entity}] {kind}: {text}")
+    entry = {"entity": entity, "kind": kind, "text": text[:700], "ts": now_ms()}
+    if code:
+        entry["code"] = code
+    append(cid, "trace", entry)
 
 
-# --------------------------------------------------- model + rule planner
+def audit(cid: str, actor: str, event: str) -> None:
+    log(f"audit: {actor}: {event}")
+    append(cid, "audit", {"at": now_ms(), "actor": actor, "event": event})
 
 
-def guess_amount(text: str) -> int:
-    best = None
-    for m in re.finditer(r"(\$)?\s?(\d[\d,]*(?:\.\d+)?)\s*([kKmM])?\b", text):
-        dollar, num, suffix = m.groups()
-        if not (dollar or suffix):
-            continue
-        val = float(num.replace(",", "")) * {"k": 1e3, "m": 1e6}.get((suffix or "").lower(), 1)
-        best = max(best or 0, val)
-    return int((best or 0) * 100)
+class RunGone(Exception):
+    """The run row was deleted (demo reset): stop quietly instead of retrying forever."""
 
 
-def guess_department(text: str) -> str:
-    t = text.lower()
-    for dept, words in {
-        "marketing": ["campaign", "booth", "event", "ads", "swag", "brand"],
-        "hr": ["training", "recruit", "onboarding", "benefit"],
-        "it": ["network", "switch", "firewall", "security", "license", "helpdesk"],
-    }.items():
-        if any(w in t for w in words):
-            return dept
-    return "engineering"
-
-
-def guess_category(text: str) -> str:
-    t = text.lower()
-    if any(w in t for w in ["license", "subscription", "saas", "software"]):
-        return "software"
-    if any(w in t for w in ["laptop", "server", "switch", "hardware", "monitor", "router"]):
-        return "hardware"
-    return "services"
-
-
-def guess_vendor(text: str) -> str:
-    names = [i["name"]["S"] for i in ddb.scan(TableName=VENDORS)["Items"]]
-    for name in names:
-        if name.lower().split()[0] in text.lower():
-            return name
-    m = re.search(r"\b(?:from|with|via)\s+([A-Z][\w&.-]*(?:\s[A-Z][\w&.-]*)?)", text)
-    return m.group(1) if m else "unknown"
-
-
-def rule_planner(messages: list[tuple[str, str]]) -> dict:
-    text, done = messages[0][1], {}
-    for _, t in messages[1:]:
-        if t.startswith("TOOL_RESULT "):
-            name, _, body = t[len("TOOL_RESULT "):].partition(": ")
-            done[name] = json.loads(body)
-    amount, dept, cat = guess_amount(text), guess_department(text), guess_category(text)
-    if "lookup_vendor" not in done:
-        return {"action": "lookup_vendor", "args": {"vendor": guess_vendor(text)}}
-    if "check_budget" not in done:
-        return {"action": "check_budget", "args": {"department": dept, "amountCents": amount}}
-    if "check_policy" not in done:
-        return {"action": "check_policy", "args": {"amountCents": amount, "category": cat}}
-    decision, reason = rule_decision(done, amount)
-    return {"action": "final", "args": {
-        "decision": decision, "reason": reason, "vendor": done["lookup_vendor"]["vendor"],
-        "department": dept, "amountCents": amount, "category": cat}}
-
-
-def extract_json(text: str) -> dict | None:
-    m = re.search(r"\{.*\}", text, re.S)
+def set_entity(cid: str, entity: str, **fields) -> None:
+    names = {"#e": entity, **{f"#{k}": k for k in fields}}
+    vals = {f":{k}": ser(v) for k, v in fields.items()}
     try:
-        return json.loads(m.group(0)) if m else None
-    except ValueError:
-        return None
+        ddb.update_item(TableName=RUNS, Key=key(cid), ConditionExpression="attribute_exists(closeId)",
+                        UpdateExpression="SET " + ", ".join(f"entities.#e.#{k} = :{k}" for k in fields),
+                        ExpressionAttributeNames=names, ExpressionAttributeValues=vals)
+    except ddb.exceptions.ConditionalCheckFailedException:
+        raise RunGone(cid) from None
+
+
+def take_chaos(attr: str) -> bool:
+    """Atomically consume one unit of a chaos counter (set from the UI's chaos drawer)."""
+    try:
+        ddb.update_item(TableName=CONFIG, Key={"key": {"S": "chaos"}},
+                        UpdateExpression=f"SET {attr} = {attr} - :one", ConditionExpression=f"{attr} > :zero",
+                        ExpressionAttributeValues={":one": {"N": "1"}, ":zero": {"N": "0"}})
+        return True
+    except ddb.exceptions.ConditionalCheckFailedException:
+        return False
+
+
+def erp_is_down() -> bool:
+    item = ddb.get_item(TableName=CONFIG, Key={"key": {"S": "chaos"}}).get("Item", {})
+    return bool(item.get("erpDown", {}).get("BOOL"))
 
 
 # ----------------------------------------------------------------- steps
 
 
 @durable_step
-def llm_turn(step: StepContext, rid: str, messages: list) -> dict:
-    source, action = "rules", None
-    if MODEL_MODE == "bedrock":
-        try:
-            res = bedrock.converse(
-                modelId=MODEL_ID,
-                system=[{"text": SYSTEM}],
-                messages=[{"role": r, "content": [{"text": t}]} for r, t in messages],
-                inferenceConfig={"maxTokens": 300, "temperature": 0},
-            )
-            raw = res["output"]["message"]["content"][0]["text"]
-            cand = extract_json(raw)
-            if cand and cand.get("action") in {"lookup_vendor", "check_budget", "check_policy", "final"}:
-                action, source = cand, "bedrock"
-            else:
-                source = "fallback (unparseable model output)"
-        except Exception as exc:
-            source = f"fallback ({type(exc).__name__})"
-    if action is None:
-        action = rule_planner(messages)
-    trace(rid, "llm", f"[{source}] {json.dumps(action)}")
-    return action
-
-
-@durable_step
-def run_tool(step: StepContext, rid: str, action: dict) -> dict:
-    name, args = action["action"], action.get("args", {})
-    if name == "lookup_vendor":
-        want = str(args.get("vendor", "")).lower()
-        for item in ddb.scan(TableName=VENDORS)["Items"]:
-            if want and (want in item["name"]["S"].lower() or item["name"]["S"].lower().split()[0] in want):
-                out = {"found": True, "vendor": item["name"]["S"],
-                       "approved": item["approved"]["BOOL"], "riskScore": int(item["risk"]["N"])}
-                break
-        else:
-            out = {"found": False, "vendor": str(args.get("vendor", "unknown")), "approved": False, "riskScore": 100}
-    elif name == "check_budget":
-        dept, amount = str(args.get("department", "")).lower(), int(args.get("amountCents", 0))
-        item = ddb.get_item(TableName=BUDGETS, Key={"department": {"S": dept}}).get("Item")
-        left = int(item["remaining_cents"]["N"]) if item else 0
-        out = {"department": dept, "remainingCents": left, "sufficient": left >= amount > 0}
-    elif name == "check_policy":
-        amount = int(args.get("amountCents", 0))
-        tier = "auto" if amount <= AUTO_LIMIT else "manager" if amount <= MANAGER_LIMIT else "blocked"
-        out = {"tier": tier, "category": args.get("category", "services")}
-    else:
-        out = {"error": f"unknown tool {name}"}
-    trace(rid, "tool", f"{name} -> {json.dumps(out)}")
-    return out
-
-
-@durable_step
-def commit_budget(step: StepContext, rid: str, dept: str, amount: int) -> bool:
+def check_feed(step: StepContext, cid: str, period: str, entity: str) -> bool:
     try:
-        ddb.update_item(
-            TableName=BUDGETS, Key={"department": {"S": dept}},
-            UpdateExpression="ADD remaining_cents :neg", ConditionExpression="remaining_cents >= :a",
-            ExpressionAttributeValues={":neg": {"N": str(-amount)}, ":a": {"N": str(amount)}},
-        )
+        s3.head_object(Bucket=BUCKET, Key=f"feeds/{period}/{entity}/bank.csv")
         return True
-    except ddb.exceptions.ConditionalCheckFailedException:
+    except s3.exceptions.ClientError:
+        log(f"[{entity}] bank feed not there yet, waiting (zero compute)")
+        set_entity(cid, entity, status="WAITING_FEED", step="waiting for the bank feed (zero compute)")
         return False
 
 
 @durable_step
-def release_budget(step: StepContext, rid: str, dept: str, amount: int, why: str) -> None:
-    ddb.update_item(
-        TableName=BUDGETS, Key={"department": {"S": dept}},
-        UpdateExpression="ADD remaining_cents :a", ExpressionAttributeValues={":a": {"N": str(amount)}},
-    )
-    set_status(rid, "REJECTED", why)
+def llm_turn(step: StepContext, cid: str, entity: str, messages: list) -> dict:
+    """One agent turn. Checkpointed: a replay never calls the agent (or its model) again."""
+    action, source = None, "rules"
+    if MODEL_MODE == "agentcore" and AGENT_RUNTIME_ARN:
+        try:
+            out = agentcore.invoke_agent_runtime(
+                agentRuntimeArn=AGENT_RUNTIME_ARN,
+                runtimeSessionId=f"close-{cid}-{entity}-session-0000000000",  # one session per entity (min 33 chars)
+                payload=json.dumps({"messages": messages}).encode(),
+                contentType="application/json", accept="application/json",
+            )
+            answer = json.loads(out["response"].read())
+            action, source = answer["action"], answer.get("source", "agentcore")
+        except Exception as exc:
+            source = f"rules (AgentCore unavailable: {type(exc).__name__})"
+    if action is None:
+        action = rule_planner(messages)
+    trace(cid, entity, "llm", f"[{source}] {json.dumps(action)}")
+    return action
 
 
 @durable_step
-def post_to_erp(step: StepContext, rid: str, flaky: bool) -> str:
-    res = ddb.update_item(
-        TableName=REQUESTS, Key={"requestId": {"S": rid}},
-        UpdateExpression="ADD erpAttempts :one", ExpressionAttributeValues={":one": {"N": "1"}},
-        ReturnValues="UPDATED_NEW",
-    )
-    attempt = int(res["Attributes"]["erpAttempts"]["N"])
-    if flaky and attempt <= ERP_FAILURES:
-        set_status(rid, "ERP_RETRY", f"ERP timed out (attempt {attempt}), backing off")
-        raise ErpUnavailable(f"ERP timeout, attempt {attempt}")
-    set_status(rid, "POSTING_TO_ERP", f"posted on attempt {attempt}")
-    return f"PO-{rid[-6:].upper()}"
+def run_tool(step: StepContext, cid: str, period: str, entity: str, action: dict, results: dict) -> dict:
+    name, args = action["action"], action.get("args", {})
+    if name == "fetch_feeds":
+        keys, counts = {}, {}
+        for kind, fname in (("ledger", "ledger.csv"), ("bank", "bank.csv")):
+            keys[kind] = f"feeds/{period}/{entity}/{fname}"
+            body = s3.get_object(Bucket=BUCKET, Key=keys[kind])["Body"].read()
+            counts[kind] = max(body.count(b"\n") - 1, 0)
+        out = {"ledgerRows": counts["ledger"], "bankRows": counts["bank"], "keys": keys}
+        set_entity(cid, entity, status="RECONCILING", step="feeds loaded")
+        trace(cid, entity, "tool", f"fetch_feeds -> ledger {counts['ledger']} rows, bank {counts['bank']} rows")
+    elif name == "run_analysis":
+        out = analyse(cid, entity, results["fetch_feeds"]["keys"], args.get("code"))
+    elif name == "draft_journals":
+        analysis = results["run_analysis"]
+        journals = draft_journals(entity, ENTITIES[entity], analysis["items"], str(args.get("plugAccount", "")))
+        out = {"count": len(journals), "journals": journals}
+        trace(cid, entity, "tool", f"draft_journals -> {len(journals)} journal(s) from "
+                                   f"{len(analysis['items'])} exceptions (timing differences need none)")
+    else:
+        out = {"error": f"unknown tool {name}"}
+    return out
+
+
+def analyse(cid: str, entity: str, keys: dict, code: str | None) -> dict:
+    """Run the agent's code in the sandbox. A crashed sandbox raises and the step retries on a fresh one."""
+    attempts = [(code, "agent-written code")] if code else []
+    attempts.append((RECON_CODE, "standard reconciliation"))
+    for src, label in attempts:
+        payload = {"code": src, "inputs": {k: {"bucket": BUCKET, "key": v} for k, v in keys.items()}}
+        if take_chaos("killSandbox"):
+            payload["chaos"] = "crash"
+        res = lam.invoke(FunctionName=SANDBOX, Payload=json.dumps(payload).encode())
+        body = json.loads(res["Payload"].read() or b"{}")
+        if res.get("FunctionError"):
+            trace(cid, entity, "system", "sandbox died mid-run; retrying on a fresh isolated environment")
+            raise SandboxCrashed(body.get("errorMessage", "sandbox crashed"))
+        if body.get("ok"):
+            analysis = body["result"]
+            trace(cid, entity, "sandbox", body["stdout"].strip() or "(no output)", code=src)
+            set_entity(cid, entity, matchRate=analysis["matchRate"], matched=analysis["matched"],
+                       unmatched=len(analysis["items"]), step="analysis complete")
+            ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET analysis.#e = :a",
+                            ExpressionAttributeNames={"#e": entity},
+                            ExpressionAttributeValues={":a": ser({**analysis, "stdout": body["stdout"]})})
+            return analysis
+        trace(cid, entity, "system", f"{label} failed in the sandbox: {body.get('error', '')[-200:]}")
+    raise RuntimeError("analysis failed")
 
 
 @durable_step
-def request_approval(step: StepContext, rid: str, callback_id: str, reason: str) -> None:
+def store_entity_result(step: StepContext, cid: str, entity: str, journals: list, agent: dict) -> dict:
+    blocked = [j for j in journals if j["status"] == "BLOCKED"]
+    for j in blocked:
+        trace(cid, entity, "guardrail",
+              f"policy overrides agent: {j['id']} ({j['debitAccount']} / {j['creditAccount']}) -> BLOCKED. {j['reason']}")
+        audit(cid, "policy", f"{j['id']} blocked: {j['reason']}")
+    audit(cid, f"agent:{entity}", f"drafted {len(journals)} journal(s); {agent.get('reason', '')}")
+    set_entity(cid, entity, status="DRAFTED", step=f"{len(journals)} journal(s), {len(blocked)} blocked")
+    return {"entity": entity, "journals": journals, "agent": agent}
+
+
+@durable_step
+def record_decision(step: StepContext, cid: str, journals: list, total: int, required: bool, reason: str, line: str) -> None:
+    trace(cid, "ALL", "guardrail", line)
     ddb.update_item(
-        TableName=REQUESTS, Key={"requestId": {"S": rid}},
+        TableName=RUNS, Key=key(cid),
+        UpdateExpression="SET journals = :j, totalUsdCents = :t, approval = :a",
+        ExpressionAttributeValues={":j": ser(journals), ":t": ser(total), ":a": ser({"required": required, "reason": reason})})
+
+
+@durable_step
+def request_approval(step: StepContext, cid: str, callback_id: str, reason: str) -> None:
+    ddb.update_item(
+        TableName=RUNS, Key=key(cid),
         UpdateExpression="SET callbackId = :c, #s = :s, detail = :d, updatedAt = :u",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":c": {"S": callback_id}, ":s": {"S": "AWAITING_APPROVAL"},
-                                   ":d": {"S": reason}, ":u": {"N": now_ms()}},
-    )
+                                   ":d": {"S": reason}, ":u": ser(now_ms())})
+    audit(cid, "workflow", f"waiting for controller sign-off: {reason}")
 
 
 @durable_step
-def write_po(step: StepContext, rid: str, po: dict) -> str:
-    key = f"purchase-orders/{po['poNumber']}.json"
-    s3.put_object(Bucket=BUCKET, Key=key, Body=json.dumps(po, indent=2).encode())
-    return key
+def post_journals(step: StepContext, cid: str, journals: list) -> int:
+    """Post to the (mock) ERP. Idempotent per journal. Honors the chaos drawer's ERP faults."""
+    todo = [j for j in journals if j["status"] != "BLOCKED"]
+    for n, j in enumerate(todo):
+        if n >= 1 and (erp_is_down() or take_chaos("erpFailures")):
+            set_status(cid, "ERP_RETRY", f"ERP timed out after {n} of {len(todo)} journals, backing off")
+            trace(cid, "ALL", "system", f"ERP timeout after posting {n} of {len(todo)} journals")
+            raise ErpUnavailable("ERP timeout")
+        ddb.put_item(TableName=POSTINGS, Item={
+            "journalId": {"S": f"{cid}/{j['id']}"}, "closeId": {"S": cid}, "status": {"S": "POSTED"},
+            "amountCents": ser(j["amountCents"]), "entity": {"S": j["entity"]}})
+        j["status"] = "POSTED"
+    set_status(cid, "POSTING", f"posted {len(todo)} journals to the ERP")
+    ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET journals = :j",
+                    ExpressionAttributeValues={":j": ser(journals)})
+    return len(todo)
 
 
 @durable_step
-def notify(step: StepContext, rid: str, po: dict) -> None:
-    sns.publish(TopicArn=TOPIC, Message=json.dumps({"requestId": rid, **po}))
+def reverse_postings(step: StepContext, cid: str, journals: list) -> int:
+    """Saga compensation: reverse every journal that made it into the ERP."""
+    posted = ddb.scan(TableName=POSTINGS, FilterExpression="closeId = :c",
+                      ExpressionAttributeValues={":c": {"S": cid}})["Items"]
+    for item in posted:
+        ddb.update_item(TableName=POSTINGS, Key={"journalId": item["journalId"]},
+                        UpdateExpression="SET #s = :r", ExpressionAttributeNames={"#s": "status"},
+                        ExpressionAttributeValues={":r": {"S": "REVERSED"}})
+    for j in journals:
+        if j["status"] == "POSTED" or any(p["journalId"]["S"].endswith(j["id"]) for p in posted):
+            j["status"] = "REVERSED"
+    ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET journals = :j",
+                    ExpressionAttributeValues={":j": ser(journals)})
+    trace(cid, "ALL", "system", f"ERP stayed down: saga reversed {len(posted)} posted journal(s)")
+    audit(cid, "saga", f"reversed {len(posted)} journal(s) after the ERP failed")
+    set_status(cid, "ROLLED_BACK", f"ERP unavailable, {len(posted)} posted journal(s) reversed")
+    return len(posted)
 
 
 @durable_step
-def finish(step: StepContext, rid: str, status: str, detail: str) -> None:
-    set_status(rid, status, detail)
+def write_package(step: StepContext, cid: str, period: str, journals: list) -> str:
+    key_ = f"packages/{cid}.json"
+    s3.put_object(Bucket=BUCKET, Key=key_, Body=json.dumps({"closeId": cid, "period": period, "journals": journals}, indent=2).encode())
+    return key_
+
+
+@durable_step
+def notify(step: StepContext, cid: str, text: str) -> None:
+    sns.publish(TopicArn=TOPIC, Message=json.dumps({"closeId": cid, "text": text}))
+
+
+@durable_step
+def finish(step: StepContext, cid: str, status: str, detail: str, actor: str = "workflow") -> None:
+    set_status(cid, status, detail)
+    audit(cid, actor, f"{status}: {detail}")
 
 
 # -------------------------------------------------------------- workflow
 
 
-@durable_execution
-def handler(event: dict, context: DurableContext) -> dict:
-    rid = event["requestId"]
-    context.step(lambda _: set_status(rid, "AGENT_REVIEW", "agent is reviewing the request"), name="start-review")
+def reconcile_entity(ctx: DurableContext, cid: str, period: str, entity: str) -> dict:
+    """One entity's branch: wait for the bank feed, then run the agent loop."""
+    polls = 0
+    while not ctx.step(check_feed(cid, period, entity), name=f"{entity}-check-feed-{polls}"):
+        if polls >= FEED_MAX_POLLS:
+            raise RuntimeError(f"bank feed for {entity} never arrived")
+        ctx.wait(Duration.from_seconds(FEED_POLL_SECONDS), name=f"{entity}-wait-feed-{polls}")
+        polls += 1
 
-    # --- agent loop: each LLM turn and tool call is a checkpoint
-    messages = [("user", event["text"])]
+    messages = [("user", f"Reconcile cash for entity {entity} ({ENTITIES[entity]}), period {period}.")]
     results, final = {}, None
     for turn in range(MAX_TURNS):
-        action = context.step(llm_turn(rid, messages), name=f"llm-turn-{turn}")
+        action = ctx.step(llm_turn(cid, entity, messages), name=f"{entity}-llm-turn-{turn}")
         if action["action"] == "final":
             final = action.get("args", {})
             break
-        result = context.step(run_tool(rid, action), name=f"tool-{action['action']}")
+        result = ctx.step(run_tool(cid, period, entity, action, results), name=f"{entity}-tool-{action['action']}",
+                          config=StepConfig(retry_strategy=sandbox_retry))
         results[action["action"]] = result
-        messages += [("assistant", json.dumps(action)), ("user", f"TOOL_RESULT {action['action']}: {json.dumps(result)}")]
+        compact = {k: v for k, v in result.items() if k not in ("items", "journals", "keys")}
+        messages += [("assistant", json.dumps(action)), ("user", f"TOOL_RESULT {action['action']}: {json.dumps(compact)}")]
+
+    final = final or {"decision": "escalate", "reason": "agent did not reach a decision"}
+    journals = apply_policy(results.get("draft_journals", {}).get("journals", []))
+    return ctx.step(store_entity_result(cid, entity, journals, final), name=f"{entity}-guardrail")
+
+
+@durable_execution
+def handler(event: dict, context: DurableContext) -> dict:
+    cid, period = event["closeId"], event.get("period", "2026-10")
+    context.step(lambda _: audit(cid, "scheduler", f"month-end close started for {period}"), name="audit-start")
+    context.step(lambda _: set_status(cid, "RECONCILING", "agents are reconciling the three entities"), name="start")
+
+    # --- one agent per entity, in parallel; a late bank feed parks only that entity
+    branches = [(lambda e: (lambda ctx: reconcile_entity(ctx, cid, period, e)))(e) for e in ENTITIES]
+    batch = context.parallel(branches, name="reconcile-entities")
+    batch.throw_if_error()
+    entity_results = batch.get_results()
+    journals = [j for r in entity_results for j in r["journals"]]
 
     # --- guardrail: the stricter of agent and policy wins
-    final = final or {"decision": "escalate", "reason": "agent did not reach a decision"}
-    amount = int(final.get("amountCents") or guess_amount(event["text"]))
-    dept = str(final.get("department") or guess_department(event["text"])).lower()
-    rule, rule_reason = rule_decision(results, amount)
-    model = final.get("decision", "escalate")
+    model = max((r["agent"].get("decision", "escalate") for r in entity_results),
+                key=lambda d: RANK.get(d, RANK["escalate"]))
+    rule, rule_reason = rule_decision(journals)
     decision = max([model if model in RANK else "escalate", rule], key=RANK.get)
-    reason = final.get("reason", "") if decision == model else rule_reason
-    context.step(
-        lambda _: trace(rid, "decision",
-                        f"agent={model}, policy={rule} -> {decision.upper()}: {reason}"),
-        name="guardrail",
-    )
+    total = journals_total_usd(journals)
+    reason = rule_reason if RANK[rule] >= RANK.get(model, 1) else "agent asked for review"
+    context.step(record_decision(cid, journals, total, decision == "escalate", reason,
+                                 f"agent={model}, policy={rule} -> {decision.upper()}: {reason}"),
+                 name="guardrail")
     if decision == "reject":
-        context.step(finish(rid, "REJECTED", reason), name="reject")
-        return {"requestId": rid, "status": "REJECTED"}
+        context.step(finish(cid, "REJECTED", reason), name="reject")
+        return {"closeId": cid, "status": "REJECTED"}
 
     # --- human in the loop (durable callback: zero compute while waiting)
     if decision == "escalate":
         cb = context.create_callback(
-            name="human-approval", config=CallbackConfig(timeout=Duration.from_seconds(APPROVAL_TIMEOUT)))
-        context.step(request_approval(rid, cb.callback_id, reason), name="request-approval")
+            name="controller-signoff", config=CallbackConfig(timeout=Duration.from_seconds(APPROVAL_TIMEOUT)))
+        context.step(request_approval(cid, cb.callback_id, reason), name="request-approval")
         try:
             verdict = json.loads(cb.result() or "{}")
         except CallbackError:
-            verdict = {"approved": False, "reason": "approval timed out"}
+            verdict = {"approved": False, "reason": "sign-off timed out", "approver": "system"}
+        who = verdict.get("approver", "controller")
         if not verdict.get("approved"):
-            context.step(finish(rid, "REJECTED", verdict.get("reason", "rejected by approver")), name="rejected-by-human")
-            return {"requestId": rid, "status": "REJECTED"}
+            context.step(finish(cid, "REJECTED", verdict.get("reason", "rejected by controller"), who), name="rejected-by-human")
+            return {"closeId": cid, "status": "REJECTED"}
+        context.step(lambda _: audit(cid, who, f"approved {len(journals)} journal(s), total {money(total)}"), name="audit-approval")
 
-    # --- commit: budget, ERP (retries), then saga compensation on failure
-    if not context.step(commit_budget(rid, dept, amount), name="commit-budget"):
-        context.step(finish(rid, "REJECTED", f"{dept} budget exhausted"), name="budget-race")
-        return {"requestId": rid, "status": "REJECTED"}
+    # --- post to the ERP (retries), then saga compensation on failure
     try:
-        po_number = context.step(
-            post_to_erp(rid, bool(event.get("flaky"))), name="post-to-erp",
-            config=StepConfig(retry_strategy=erp_retry))
+        posted = context.step(post_journals(cid, journals), name="post-to-erp", config=StepConfig(retry_strategy=erp_retry))
     except StepError:
-        context.step(release_budget(rid, dept, amount, "ERP unavailable, budget released"), name="compensate")
-        return {"requestId": rid, "status": "REJECTED"}
+        context.step(reverse_postings(cid, journals), name="compensate")
+        return {"closeId": cid, "status": "ROLLED_BACK"}
+    context.step(lambda _: audit(cid, "erp", f"posted {posted} journal(s)"), name="audit-posted")
 
-    po = {"poNumber": po_number, "vendor": final.get("vendor"), "department": dept,
-          "amountCents": amount, "summary": event["text"][:200]}
     context.parallel(
         [
-            lambda ctx: ctx.step(write_po(rid, po), name="write-po-document"),
-            lambda ctx: ctx.step(notify(rid, po), name="notify-requester"),
+            lambda ctx: ctx.step(write_package(cid, period, [{**j, "status": "POSTED" if j["status"] != "BLOCKED" else j["status"]} for j in journals]),
+                                 name="write-close-package"),
+            lambda ctx: ctx.step(notify(cid, f"{period} close complete: {posted} journals posted ({money(total)})"),
+                                 name="notify-finance"),
         ],
         name="fulfil",
     )
-    context.step(finish(rid, "PO_ISSUED", f"{po_number} issued to {po['vendor']} for {money(amount)}"), name="issue-po")
-    return {"requestId": rid, "status": "PO_ISSUED", "po": po_number}
+    skipped = sum(1 for j in journals if j["status"] == "BLOCKED")
+    context.step(finish(cid, "CLOSED", f"{posted} journals posted, {skipped} held back by policy"), name="close-books")
+    return {"closeId": cid, "status": "CLOSED", "posted": posted}

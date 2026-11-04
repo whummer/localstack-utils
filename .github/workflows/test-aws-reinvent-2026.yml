@@ -1,4 +1,4 @@
-name: AWS re:Invent 2026 (Procurement Copilot)
+name: AWS re:Invent 2026 (Close Copilot)
 
 on:
   pull_request:
@@ -35,15 +35,21 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install awscli and test dependencies
-        run: pip install awscli -r tests/requirements.txt
+      - name: Set up Node.js (builds the web function)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
 
-      - name: Start LocalStack (Lambda durable functions need a Pro license)
+      - name: Install awscli and test dependencies
+        run: pip install awscli boto3 -r tests/requirements.txt
+
+      - name: Start LocalStack (durable functions, web functions and AgentCore need a Pro license)
         env:
           LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_AUTH_TOKEN }}
         run: |
           docker run -d --name localstack -p 4566:4566 -p 4510-4559:4510-4559 \
             -e LOCALSTACK_AUTH_TOKEN \
+            -e ENABLE_BEDROCK_AGENTCORE=1 \
             -v /var/run/docker.sock:/var/run/docker.sock \
             localstack/localstack-pro:latest
           for i in $(seq 1 60); do

@@ -1,4 +1,4 @@
-"""SQS-triggered Lambda: turns SNS notifications into a fake email to the requester."""
+"""SQS-triggered Lambda: turns SNS notifications into a fake email to the finance team."""
 
 import json
 import os
@@ -12,10 +12,10 @@ ddb = boto3.client("dynamodb")
 def handler(event, context):
     for record in event["Records"]:
         msg = json.loads(json.loads(record["body"])["Message"])  # SQS body = SNS envelope
-        text = f"Email to requester: {msg['poNumber']} for ${msg['amountCents'] / 100:,.0f} sent to {msg['vendor']}"
+        text = f"Email to finance-close@northwind.example: {msg['text']}"
         ddb.update_item(
-            TableName=os.environ["REQUESTS_TABLE"],
-            Key={"requestId": {"S": msg["requestId"]}},
+            TableName=os.environ["RUNS_TABLE"],
+            Key={"closeId": {"S": msg["closeId"]}},
             UpdateExpression="SET notifications = list_append(if_not_exists(notifications, :e), :n)",
             ExpressionAttributeValues={
                 ":e": {"L": []},

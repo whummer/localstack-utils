@@ -1,50 +1,53 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Procurement Copilot - Lambda web function + AI agent in a durable function + DynamoDB, S3, SNS, SQS, Bedrock
+Description: 'Close Copilot - month-end close with AI agents (Lambda Web Function UI, durable function, AgentCore agents, sandbox function, DynamoDB, S3, SNS, SQS)'
 
 Parameters:
   CodeBucket: {Type: String}
   WorkflowKey: {Type: String}
   WebKey: {Type: String}
+  SandboxKey: {Type: String}
   NotifierKey: {Type: String}
   Architecture: {Type: String, Default: arm64}
-  ModelMode: {Type: String, Default: rules, AllowedValues: [rules, bedrock]}
+  ModelMode: {Type: String, Default: agentcore, AllowedValues: [agentcore, rules]}
+  AgentRuntimeArn: {Type: String, Default: ''}
+  AgentMode: {Type: String, Default: rules}
 
 Resources:
-  RequestsTable:
+  RunsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: procure-requests
+      TableName: close-runs
       BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{AttributeName: requestId, AttributeType: S}]
-      KeySchema: [{AttributeName: requestId, KeyType: HASH}]
+      AttributeDefinitions: [{AttributeName: closeId, AttributeType: S}]
+      KeySchema: [{AttributeName: closeId, KeyType: HASH}]
 
-  VendorsTable:
+  PostingsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: procure-vendors
+      TableName: close-postings
       BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{AttributeName: vendorId, AttributeType: S}]
-      KeySchema: [{AttributeName: vendorId, KeyType: HASH}]
+      AttributeDefinitions: [{AttributeName: journalId, AttributeType: S}]
+      KeySchema: [{AttributeName: journalId, KeyType: HASH}]
 
-  BudgetsTable:
+  ConfigTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: procure-budgets
+      TableName: close-config
       BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{AttributeName: department, AttributeType: S}]
-      KeySchema: [{AttributeName: department, KeyType: HASH}]
+      AttributeDefinitions: [{AttributeName: key, AttributeType: S}]
+      KeySchema: [{AttributeName: key, KeyType: HASH}]
 
   DocsBucket:
     Type: AWS::S3::Bucket
-    Properties: {BucketName: procure-documents}
+    Properties: {BucketName: close-documents}
 
   NotificationsTopic:
     Type: AWS::SNS::Topic
-    Properties: {TopicName: procure-notifications}
+    Properties: {TopicName: close-notifications}
 
   NotificationsQueue:
     Type: AWS::SQS::Queue
-    Properties: {QueueName: procure-notifications, VisibilityTimeout: 30}
+    Properties: {QueueName: close-notifications, VisibilityTimeout: 30}
 
   NotificationsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -73,21 +76,25 @@ Resources:
         Statement:
           - {Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}
       Policies:
-        - PolicyName: procure
+        - PolicyName: close
           PolicyDocument:
             Statement:
               - Effect: Allow
                 Action:
                   - logs:*
                   - dynamodb:*
-                  - s3:PutObject
+                  - s3:*
                   - bedrock:InvokeModel
                   - bedrock:Converse
+                  - bedrock-agentcore:InvokeAgentRuntime
                   - sns:Publish
                   - sqs:ReceiveMessage
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
                   - lambda:InvokeFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:ListDurableExecutionsByFunction
                   - lambda:CheckpointDurableExecution
                   - lambda:GetDurableExecutionState
                   - lambda:GetDurableExecutionHistory
@@ -98,7 +105,7 @@ Resources:
   WorkflowFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: procure-workflow
+      FunctionName: close-workflow
       Runtime: python3.13
       Handler: handler.handler
       Role: !GetAtt FunctionRole.Arn
@@ -108,24 +115,52 @@ Resources:
       DurableConfig: {ExecutionTimeout: 1800, RetentionPeriodInDays: 1}
       Environment:
         Variables:
-          REQUESTS_TABLE: !Ref RequestsTable
-          VENDORS_TABLE: !Ref VendorsTable
-          BUDGETS_TABLE: !Ref BudgetsTable
+          RUNS_TABLE: !Ref RunsTable
+          CONFIG_TABLE: !Ref ConfigTable
+          POSTINGS_TABLE: !Ref PostingsTable
           DOCS_BUCKET: !Ref DocsBucket
           NOTIFICATIONS_TOPIC: !Ref NotificationsTopic
+          SANDBOX_FUNCTION: !Ref SandboxFunction
           MODEL_MODE: !Ref ModelMode
+          AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
           APPROVAL_TIMEOUT_SECONDS: '300'
+
+  # The agent's code runs here: own role, read-only access to the feeds, nothing else.
+  SandboxRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - {Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}
+      Policies:
+        - PolicyName: read-feeds
+          PolicyDocument:
+            Statement:
+              - {Effect: Allow, Action: ['logs:*'], Resource: '*'}
+              - {Effect: Allow, Action: ['s3:GetObject'], Resource: !Sub 'arn:aws:s3:::${DocsBucket}/feeds/*'}
+
+  SandboxFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: close-sandbox
+      Runtime: python3.13
+      Handler: handler.handler
+      Role: !GetAtt SandboxRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Architectures: [!Ref Architecture]
+      Code: {S3Bucket: !Ref CodeBucket, S3Key: !Ref SandboxKey}
 
   NotifierFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: procure-notifier
+      FunctionName: close-notifier
       Runtime: python3.13
       Handler: handler.handler
       Role: !GetAtt FunctionRole.Arn
       Architectures: [!Ref Architecture]
       Code: {S3Bucket: !Ref CodeBucket, S3Key: !Ref NotifierKey}
-      Environment: {Variables: {REQUESTS_TABLE: !Ref RequestsTable}}
+      Environment: {Variables: {RUNS_TABLE: !Ref RunsTable}}
 
   NotifierMapping:
     Type: AWS::Lambda::EventSourceMapping
@@ -134,33 +169,44 @@ Resources:
       EventSourceArn: !GetAtt NotificationsQueue.Arn
       BatchSize: 1
 
+  # Lambda Web Function: a plain Node.js HTTP server (no event handler). The
+  # function, its immutable revision (code + config) and the HTTPS endpoint are
+  # three resources. The code zip must live in a versioning-enabled S3 bucket.
   WebFunction:
-    Type: AWS::Lambda::Function
+    Type: AWS::Lambda::WebFunction
     Properties:
-      FunctionName: procure-web
-      Runtime: python3.13
-      Handler: handler.handler
-      Role: !GetAtt FunctionRole.Arn
-      Timeout: 30
-      Architectures: [!Ref Architecture]
-      Code: {S3Bucket: !Ref CodeBucket, S3Key: !Ref WebKey}
-      Environment:
-        Variables:
-          REQUESTS_TABLE: !Ref RequestsTable
-          BUDGETS_TABLE: !Ref BudgetsTable
-          WORKFLOW_FUNCTION: !Ref WorkflowFunction
+      FunctionName: close-web
 
-  WebUrl:
-    Type: AWS::Lambda::Url
-    Properties: {TargetFunctionArn: !GetAtt WebFunction.Arn, AuthType: NONE}
-
-  WebUrlPermission:
-    Type: AWS::Lambda::Permission
+  WebRevision:
+    Type: AWS::Lambda::WebFunctionRevision
     Properties:
       FunctionName: !Ref WebFunction
-      Action: lambda:InvokeFunctionUrl
-      Principal: '*'
-      FunctionUrlAuthType: NONE
+      Description: Close Copilot UI, API and SSE stream
+      BuildConfig:
+        RuntimeConfig: {Runtime: nodejs24.x}
+        CodeConfig:
+          S3Object: {Bucket: !Ref CodeBucket, Key: !Ref WebKey}
+      ServiceConfig:
+        ExecutionRoleArn: !GetAtt FunctionRole.Arn
+        TimeoutSeconds: 300  # a stream may stay open this long; the browser reconnects
+        EnvironmentVariables:
+          RUNS_TABLE: !Ref RunsTable
+          CONFIG_TABLE: !Ref ConfigTable
+          DOCS_BUCKET: !Ref DocsBucket
+          POSTINGS_TABLE: !Ref PostingsTable
+          WORKFLOW_FUNCTION: !Ref WorkflowFunction
+          AGENT_MODE: !Ref AgentMode
+          AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
+
+  WebEndpoint:
+    Type: AWS::Lambda::WebFunctionEndpoint
+    Properties:
+      FunctionName: !Ref WebFunction
+      EndpointName: default
+      AuthType: ApplicationManaged  # public; the app owns authentication
+      EndpointType: HomeRegion
+      RevisionWeights:
+        - {RevisionId: !GetAtt WebRevision.RevisionId, Weight: 100}
 
 Outputs:
-  WebUrl: {Value: !GetAtt WebUrl.FunctionUrl}
+  WebDomain: {Value: !GetAtt WebEndpoint.DomainName}

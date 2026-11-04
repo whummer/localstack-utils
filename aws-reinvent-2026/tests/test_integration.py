@@ -1,4 +1,4 @@
-"""End-to-end tests against a deployed stack (run `make deploy` first).
+"""End-to-end tests for Close Copilot against a deployed stack (run `make deploy` first).
 
 Talks to the Lambda web function over HTTP like the browser does; endpoint and
 credentials come from the usual AWS_ENDPOINT_URL / AWS_* environment variables.
@@ -6,35 +6,31 @@ credentials come from the usual AWS_ENDPOINT_URL / AWS_* environment variables.
 
 import json
 import os
+import sys
 import time
 import urllib.request
 
 import boto3
 import pytest
 
-AUTO = "Need 5 laptops for the new data engineering hires, around $12k, from Dell."
-HUMAN = "Replace the core network switches in the datacenter, about $38k from Cisco Systems."
-BLOCKED = "Marketing wants a $9k booth giveaway order from ShadyCorp, urgent."
-OVER_LIMIT = "We want to buy $80k of servers from Dell for the engineering team."
-
-
-BUDGETS = {"engineering": 10_000_000, "it": 6_000_000, "marketing": 2_000_000, "hr": 1_500_000}
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+import seed  # noqa: E402  (resets the demo data)
 
 
 @pytest.fixture(autouse=True)
-def fresh_budgets():
-    """Every test starts from the seeded budgets so tests don't affect each other."""
-    ddb = boto3.client("dynamodb")
-    for dept, cents in BUDGETS.items():
-        ddb.put_item(TableName="procure-budgets", Item={
-            "department": {"S": dept}, "remaining_cents": {"N": str(cents)}, "total_cents": {"N": str(cents)}})
+def fresh_demo_data():
+    """Every test starts from the seeded data: no runs, no chaos, DE bank feed held back."""
+    seed.main()
 
 
 @pytest.fixture(scope="session")
 def base_url():
     cfn = boto3.client("cloudformation")
-    outputs = cfn.describe_stacks(StackName="procurement")["Stacks"][0]["Outputs"]
-    return outputs[0]["OutputValue"].rstrip("/")
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in cfn.describe_stacks(StackName="close-copilot")["Stacks"][0]["Outputs"]}
+    domain = outputs["WebDomain"]
+    # LocalStack reports the endpoint domain with :4566; honour a custom gateway port.
+    port = os.environ.get("AWS_ENDPOINT_URL", "").rsplit(":", 1)[-1]
+    return "http://" + (domain.replace(":4566", f":{port}") if port.isdigit() else domain)
 
 
 @pytest.fixture(scope="session")
@@ -50,82 +46,169 @@ def api(base_url):
     return call
 
 
-def submit(api, text, flaky=False):
-    return api("POST", "/api/requests", {"text": text, "flaky": flaky})["requestId"]
+def start(api) -> str:
+    return api("POST", "/api/close", {})["closeId"]
 
 
-def wait_for(api, rid, states, timeout=90):
+def wait_for(api, cid, states, timeout=120):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        row = api("GET", f"/api/requests/{rid}")
+        row = api("GET", f"/api/closes/{cid}")
         if row["status"] in states:
             return row
         time.sleep(1)
-    raise AssertionError(f"{rid} stuck in {row['status']}: {row.get('detail')}")
+    raise AssertionError(f"{cid} stuck in {row['status']}: {row.get('detail')}")
 
 
-def wait_notification(api, rid, timeout=30):
+def wait_entity(api, cid, entity, status, timeout=60):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        row = api("GET", f"/api/requests/{rid}")
-        if row.get("notifications"):
+        row = api("GET", f"/api/closes/{cid}")
+        if row["entities"][entity]["status"] == status:
             return row
         time.sleep(1)
-    raise AssertionError("no notification delivered via SNS -> SQS -> Lambda")
+    raise AssertionError(f"{entity} never reached {status}: {row['entities'][entity]}")
 
 
-def budget(api, dept):
-    return next(b for b in api("GET", "/api/budgets") if b["department"] == dept)["remaining_cents"]
+def reach_approval(api):
+    """Start a close and walk it through the late DE feed up to the controller's sign-off."""
+    cid = start(api)
+    wait_entity(api, cid, "DE", "WAITING_FEED")
+    api("POST", "/api/feeds/DE/deliver")
+    return cid, wait_for(api, cid, {"AWAITING_APPROVAL"})
 
 
 def test_web_function_serves_ui(base_url):
     html = urllib.request.urlopen(base_url + "/", timeout=30).read().decode()
-    assert "Procurement Copilot" in html
+    assert "Close Copilot" in html
 
 
-def test_auto_approve_runs_agent_and_fans_out(api):
-    before = budget(api, "engineering")
-    rid = submit(api, AUTO)
-    row = wait_for(api, rid, {"PO_ISSUED", "REJECTED"})
-    assert row["status"] == "PO_ISSUED"
-    kinds = [t["kind"] for t in row["trace"]]
-    assert kinds.count("tool") == 3 and kinds[-1] == "decision"
+def test_late_feed_parks_only_that_entity_then_close_completes(api):
+    cid = start(api)
+    row = wait_entity(api, cid, "DE", "WAITING_FEED")
+    assert "bank feed" in row["entities"]["DE"]["step"]
+    us = wait_entity(api, cid, "US", "DRAFTED")["entities"]["US"]  # the other entities carry on
+    assert us["matched"] > 0
+    api("POST", "/api/feeds/DE/deliver")
+    row = wait_for(api, cid, {"AWAITING_APPROVAL"})
+    assert row["entities"]["DE"]["status"] == "DRAFTED"
+    api("POST", f"/api/closes/{cid}/decision", {"approved": True, "approver": "Dana Whitfield, Controller"})
+    row = wait_for(api, cid, {"CLOSED", "REJECTED", "ROLLED_BACK"})
+    assert row["status"] == "CLOSED"
     assert "ExecutionSucceeded" in [e["type"] for e in row["timeline"]]
-    assert budget(api, "engineering") == before - 1_200_000
-    assert "PO-" in wait_notification(api, rid)["notifications"][0]["text"]
-    po = boto3.client("s3").get_object(Bucket="procure-documents", Key=f"purchase-orders/PO-{rid[-6:].upper()}.json")
-    assert json.loads(po["Body"].read())["amountCents"] == 1_200_000
+    assert any("Dana Whitfield" in a["actor"] for a in row["audit"])
+    package = boto3.client("s3").get_object(Bucket="close-documents", Key=f"packages/{cid}.json")
+    assert json.loads(package["Body"].read())["closeId"] == cid
+
+
+def test_agents_run_analysis_in_the_sandbox_and_find_the_planted_exceptions(api):
+    cid, row = reach_approval(api)
+    assert row["analysis"]["US"]["byType"] == {"timing": 2, "duplicate": 1, "fee": 1, "fx": 0, "unexplained": 0}
+    assert row["analysis"]["DE"]["byType"] == {"timing": 1, "duplicate": 0, "fee": 1, "fx": 1, "unexplained": 1}
+    assert any(t["kind"] == "sandbox" and t.get("code") for t in row["trace"])
+    if os.environ.get("MODEL_MODE", "agentcore") == "agentcore":  # the turns really came from the AgentCore Runtime
+        assert all(t["text"].startswith("[agentcore") for t in row["trace"] if t["kind"] == "llm")
+
+
+def test_policy_overrides_the_agent_on_restricted_accounts(api):
+    cid, row = reach_approval(api)
+    blocked = [j for j in row["journals"] if j["status"] == "BLOCKED"]
+    assert [j["entity"] for j in blocked] == ["DE"] and blocked[0]["creditAccount"] == "3900"
+    assert any(t["kind"] == "guardrail" and "policy overrides agent" in t["text"] for t in row["trace"])
+    assert row["approval"]["required"] is True
+
+
+def test_controller_rejection_posts_nothing(api):
+    cid, _ = reach_approval(api)
+    api("POST", f"/api/closes/{cid}/decision", {"approved": False, "approver": "Dana Whitfield, Controller"})
+    row = wait_for(api, cid, {"CLOSED", "REJECTED", "ROLLED_BACK"})
+    assert row["status"] == "REJECTED"
+    posted = boto3.client("dynamodb").scan(TableName="close-postings")["Items"]
+    assert posted == []
+
+
+def test_killed_sandbox_is_retried_without_repeating_agent_turns(api):
+    api("POST", "/api/chaos", {"killSandbox": 1})
+    cid, row = reach_approval(api)
+    types = [e["type"] for e in row["timeline"]]
+    assert types.count("StepFailed") >= 1, "the killed sandbox should show up as a failed, retried step"
+    assert any(t["kind"] == "system" and "sandbox died" in t["text"] for t in row["trace"])
+    assert api("GET", "/api/closes/" + cid)["analysis"]["US"]["matched"] > 0
 
 
 def test_flaky_erp_is_retried_by_the_durable_function(api):
-    rid = submit(api, AUTO, flaky=True)
-    row = wait_for(api, rid, {"PO_ISSUED", "REJECTED"})
-    assert row["status"] == "PO_ISSUED"
-    assert row["erpAttempts"] == 3
-    assert [e["type"] for e in row["timeline"]].count("StepFailed") == 2
+    api("POST", "/api/chaos", {"erpFailures": 2})
+    cid, _ = reach_approval(api)
+    api("POST", f"/api/closes/{cid}/decision", {"approved": True, "approver": "Dana Whitfield, Controller"})
+    row = wait_for(api, cid, {"CLOSED", "REJECTED", "ROLLED_BACK"})
+    assert row["status"] == "CLOSED"
+    assert [e["type"] for e in row["timeline"]].count("StepFailed") >= 2
 
 
-def test_human_approval_then_po(api):
-    rid = submit(api, HUMAN)
-    row = wait_for(api, rid, {"AWAITING_APPROVAL"})
-    assert "manager" in row["detail"]
-    api("POST", f"/api/requests/{rid}/decision", {"approved": True})
-    assert wait_for(api, rid, {"PO_ISSUED", "REJECTED"})["status"] == "PO_ISSUED"
+def test_erp_outage_triggers_saga_reversal(api):
+    api("POST", "/api/chaos", {"erpDown": True})
+    cid, _ = reach_approval(api)
+    api("POST", f"/api/closes/{cid}/decision", {"approved": True, "approver": "Dana Whitfield, Controller"})
+    row = wait_for(api, cid, {"CLOSED", "REJECTED", "ROLLED_BACK"}, timeout=180)
+    assert row["status"] == "ROLLED_BACK"
+    assert any(j["status"] == "REVERSED" for j in row["journals"])
+    postings = boto3.client("dynamodb").scan(TableName="close-postings")["Items"]
+    assert postings and all(p["status"]["S"] == "REVERSED" for p in postings)
 
 
-def test_human_rejection_does_not_spend_budget(api):
-    before = budget(api, "it")
-    rid = submit(api, HUMAN)
-    wait_for(api, rid, {"AWAITING_APPROVAL"})
-    api("POST", f"/api/requests/{rid}/decision", {"approved": False})
-    assert wait_for(api, rid, {"PO_ISSUED", "REJECTED"})["status"] == "REJECTED"
-    assert budget(api, "it") == before
+def test_sse_streams_agent_progress_live(api, base_url):
+    """The web function streams Server-Sent Events: entity statuses arrive as they happen."""
+    stream = urllib.request.urlopen(base_url + "/api/stream", timeout=90)
+    cid = start(api)
+    seen, event, deadline = [], None, time.time() + 90
+    while time.time() < deadline:
+        line = stream.readline().decode().rstrip("\n")
+        if line.startswith("event:"):
+            event = line.split(":", 1)[1].strip()
+        elif line.startswith("data:") and event == "snapshot":
+            snap = json.loads(line[5:])
+            run = next((r for r in snap["runs"] if r["closeId"] == cid), None)
+            if run and (not seen or seen[-1] != run["entities"]["DE"]["status"]):
+                seen.append(run["entities"]["DE"]["status"])
+            if "DE" in snap["heldFeeds"] and seen and seen[-1] == "WAITING_FEED":
+                api("POST", "/api/feeds/DE/deliver")
+            if run and run["entities"]["DE"]["status"] == "DRAFTED":
+                break
+    stream.close()
+    assert "WAITING_FEED" in seen and seen[-1] == "DRAFTED", f"got {seen}"
 
 
-@pytest.mark.parametrize("text, reason", [(BLOCKED, "not on the approved list"), (OVER_LIMIT, "")])
-def test_policy_blocks_what_the_agent_cannot_approve(api, text, reason):
-    rid = submit(api, text)
-    row = wait_for(api, rid, {"PO_ISSUED", "REJECTED"})
-    assert row["status"] == "REJECTED"
-    assert reason in row["detail"]
-    assert "callbackId" not in row
+def test_lambda_logs_are_streamed_to_the_ui(api, base_url):
+    """The web function tails CloudWatch Logs of the workflow and sandbox and streams them over SSE."""
+    stream = urllib.request.urlopen(base_url + "/api/logs", timeout=90)
+    start(api)
+    seen, event, deadline = set(), None, time.time() + 90
+    while time.time() < deadline and not {"workflow", "sandbox"} <= seen:
+        line = stream.readline().decode().rstrip("\n")
+        if line.startswith("event:"):
+            event = line.split(":", 1)[1].strip()
+        elif line.startswith("data:") and event == "logs":
+            for entry in json.loads(line[5:]):
+                assert entry["text"] and not entry["text"].startswith("START RequestId")
+                seen.add(entry["fn"])
+    stream.close()
+    assert {"workflow", "sandbox"} <= seen, f"only saw logs from {seen}"
+
+
+def test_infra_stream_reports_the_aws_resources_behind_the_demo(api, base_url):
+    """The 'Under the hood' panel is fed by a live inventory of the LocalStack resources."""
+    stream = urllib.request.urlopen(base_url + "/api/infra", timeout=60)
+    event, inv, deadline = None, None, time.time() + 60
+    while time.time() < deadline and inv is None:
+        line = stream.readline().decode().rstrip("\n")
+        if line.startswith("event:"):
+            event = line.split(":", 1)[1].strip()
+        elif line.startswith("data:") and event == "infra":
+            inv = json.loads(line[5:])
+    stream.close()
+    assert inv, "no infra event received"
+    assert {l["name"] for l in inv["lambdas"]} == {"close-web", "close-workflow", "close-sandbox", "close-notifier"}
+    assert {t["table"] for t in inv["dynamodb"]} == {"close-runs", "close-postings", "close-config"}
+    assert inv["s3"]["prefixes"]["staging"] == 1, "the DE bank feed is held in staging/"
+    assert inv["s3"]["prefixes"]["feeds"] >= 5  # ledger x3 + bank x2 (DE is held back)
+    assert inv["durable"] is not None and inv["sqs"]["queue"] == "close-notifications"
