@@ -1,4 +1,11 @@
-# Close Copilot: demo plan (re:Invent 2026 video, ~4 min)
+# Finance Closing Copilot: demo plan (re:Invent 2026 video, ~4 min)
+
+> **Status (updated):** the plan below was the starting point. What changed while building it:
+> the sandbox is a separate locked-down Lambda (LocalStack does not support Lambda MicroVMs yet), the standard
+> reconciliation uses the Python standard library instead of pandas, the agent defaults to a deterministic
+> planner (`rules`), and the UI was simplified to one screen with big buttons for a fast-forwarded video.
+> See README.md for how it works today.
+
 
 Month-end financial close with an AI agent team. Fictional company: **Northwind Group**, three entities (US, DE, UK).
 Replaces the procurement scenario; reuses the durable workflow, AgentCore runtime pattern, SSE streaming and saga code.

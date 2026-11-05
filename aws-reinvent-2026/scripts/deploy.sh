@@ -28,4 +28,4 @@ aws cloudformation deploy --stack-name close-copilot --template-file template.ya
 python3 scripts/seed.py
 
 aws lambda wait function-active-v2 --function-name close-workflow
-echo; echo "Close Copilot is up: $(./scripts/url.sh)"
+echo; echo "Finance Closing Copilot is up: $(./scripts/url.sh)"

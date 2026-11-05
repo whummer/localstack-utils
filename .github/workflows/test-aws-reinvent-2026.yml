@@ -1,4 +1,4 @@
-name: AWS re:Invent 2026 (Close Copilot)
+name: AWS re:Invent 2026 (Finance Closing Copilot)
 
 on:
   pull_request:

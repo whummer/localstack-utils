@@ -1,88 +1,83 @@
-# Procurement Copilot (re:Invent 2026 lightning talk)
+# Finance Closing Copilot (re:Invent 2026 demo)
 
-An enterprise purchase-request app where an **AI agent** reviews requests inside a
-**Lambda durable function**. Everything runs locally on LocalStack.
+**AI agents close the books. Policy has the last word. People sign off.**
+
+A month-end close for three legal entities (US, DE, UK), run by AI agents inside an
+AWS Lambda **durable function**, with a **Lambda web function** UI. Everything runs locally on LocalStack.
+
+The story in four steps:
+
+1. **Collect**: bank feeds come in. One is late, so that entity pauses at zero compute.
+2. **Reconcile**: one AI agent per entity (Bedrock AgentCore) matches the ledger against the bank. The code the agent runs executes in an isolated sandbox Lambda.
+3. **Approve**: a policy guardrail checks the agents' journals (the stricter of agent and rules wins), then a controller signs off through a durable callback.
+4. **Post**: journals go to the ERP with retries. If the ERP stays down, a saga reverses what was posted.
 
 ```mermaid
 flowchart LR
-    user([Browser]) -->|"HTTP + SSE stream"| web["Lambda Web Function<br/>Node.js HTTP server: UI, API, /api/stream"]
-    web <-->|read and write| ddb[("DynamoDB<br/>requests, vendors, budgets")]
-    web -->|"async invoke<br/>named durable execution"| wf
+    user([Browser]) -->|"HTTP + SSE"| web["Lambda Web Function<br/>UI, API, live stream"]
+    web -->|"start / approve"| wf
 
-    subgraph wf["Durable function: procurement workflow"]
+    subgraph wf["Durable function: close workflow"]
         direction TB
-        agent["Agent loop<br/>LLM turn, tool call (each a checkpoint)"] --> guard{"Policy guardrail<br/>stricter of agent and rules"}
-        guard -->|reject or needs info| ended([Rejected / NEEDS_INFO])
-        guard -->|escalate| human["Wait for callback<br/>human approval"]
-        guard -->|approve| commit
-        human -->|approved| commit["Commit budget,<br/>post to ERP with retries"]
-        human -->|rejected or timeout| ended
-        commit -->|ERP down| saga["Compensate:<br/>release budget"]
-        commit --> fan["Fan out in parallel"]
+        feed["Wait for bank feeds"] --> fan["One branch per entity"]
+        fan --> agent["Agent turns<br/>(each a checkpoint)"]
+        agent --> guard{"Policy guardrail"}
+        guard --> human["Wait for controller<br/>(callback, zero compute)"]
+        human --> post["Post journals to ERP,<br/>with retries"]
+        post -->|ERP down| saga["Saga: reverse journals"]
     end
 
-    agent <-->|"InvokeAgentRuntime:<br/>next action"| ac["Bedrock AgentCore Runtime<br/>the agent's brain (container)"]
-    ac -.->|"AGENT_MODEL_MODE=bedrock"| bedrock["Bedrock<br/>(Ollama model)"]
-    agent <-.->|"tools: vendor, budget, policy"| ddb
-    web -.->|"send callback success<br/>Approve / Reject button"| human
-    commit --> ddb
-    fan --> s3[("S3<br/>purchase order")]
-    fan --> sns["SNS topic"] --> sqs["SQS queue"] --> notifier["Lambda notifier"] --> ddb
+    agent <-->|InvokeAgentRuntime| ac["Bedrock AgentCore Runtime<br/>the agent's brain"]
+    agent -->|run_analysis| sb["Sandbox Lambda<br/>runs the agent's code"]
+    wf <--> ddb[(DynamoDB)]
+    wf --> s3[(S3: feeds, close package)]
+    wf --> sns[SNS] --> sqs[SQS] --> notifier["Notifier Lambda"]
 ```
-
-## Talk points
-
-- **AgentCore + durable**: the agent's brain is a Bedrock AgentCore Runtime, the durable function owns the loop, tools and side effects.
-- **Streaming**: the web function pushes the agent trace and durable timeline to the browser over Server-Sent Events.
-- **Durable agent loop**: every LLM turn and tool call is a checkpointed step, so a
-  crash or a day-long approval never re-runs (or re-bills) finished LLM calls.
-- **AI proposes, policy disposes**: the agent's verdict is compared with hard rules in code; the stricter one wins.
-- **Human in the loop**: escalated requests pause on a durable callback with zero compute.
-- **Saga**: if the ERP stays down after approval, the budget commit is rolled back.
-- **Idempotency**: the request id is the durable execution name.
 
 ## Run
 
-Needs LocalStack Pro (durable functions, Lambda Web Functions, Bedrock AgentCore), Docker, Node.js and Python 3.13+.
-Start LocalStack with AgentCore enabled:
+Needs LocalStack Pro (durable functions, Lambda Web Functions, AgentCore), Docker, Node.js and Python 3.13+.
+The `localstack/localstack-pro:dev` image is recommended for now: it routes DNS inside Lambda Web Function
+containers, which the live infra view relies on.
 
     docker run -d --name localstack -p 4566:4566 \
       -e LOCALSTACK_AUTH_TOKEN -e ENABLE_BEDROCK_AGENTCORE=1 \
-      -v /var/run/docker.sock:/var/run/docker.sock localstack/localstack-pro
+      -v /var/run/docker.sock:/var/run/docker.sock localstack/localstack-pro:dev
 
-Then:
+    make deploy    # build, create the AgentCore runtime, deploy via CloudFormation, seed data
+    make open      # open the UI (the endpoint id is random per deploy; `make url` prints it)
+    make test      # integration tests (one per demo beat)
+    make reset     # back to a clean state: no runs, no chaos, DE bank feed held back again
 
-    make deploy    # builds, creates the AgentCore runtime, deploys via CloudFormation, seeds data
-    make url       # open this in a browser
-    make test      # integration tests
+On a different port (say 4567): start the container with `-p 4567:4567 -e GATEWAY_LISTEN=0.0.0.0:4567
+-e LOCALSTACK_HOST=localhost.localstack.cloud:4567` and set `LOCALSTACK_ENDPOINT=http://localhost.localstack.cloud:4567`
+for the make targets.
 
-The agent's brain (`functions/agent`) runs as a Bedrock AgentCore Runtime from a locally built
-Docker image; the durable function calls `InvokeAgentRuntime` once per agent turn.
+## Demo script
 
-| Variable | Effect |
+1. **Start the October close.** US and UK reconcile. DE stops and says its bank feed is late.
+2. **Deliver the DE bank feed.** DE resumes. Each entity shows its match rate.
+3. **Policy overrides the agent.** One drafted journal books an unexplained receipt to Retained Earnings (restricted). Policy blocks it and the controller has to sign off.
+4. **Approve.** The books close.
+5. **Chaos (Simulation).** Turn on "Kill the sandbox" (the agent's code is retried on a fresh sandbox, finished agent turns are not repeated) or "ERP down" (posting fails, the saga rolls everything back).
+
+## How the agent thinks
+
+| `AGENT_MODEL_MODE` | Effect |
 | --- | --- |
-| `MODEL_MODE=rules` | skip AgentCore, use the in-function planner |
-| `AGENT_MODEL_MODE=bedrock` | the runtime asks a model through Bedrock (LocalStack: Ollama) and falls back to the rule planner if the output is unusable (default: `rules`) |
-| `LOCALSTACK_ENDPOINT` | target another instance, e.g. `http://localhost.localstack.cloud:4567` |
+| `rules` (default) | A deterministic planner inside the AgentCore runtime. No LLM: fast and repeatable for recording |
+| `bedrock` | The runtime asks a model through Bedrock (LocalStack: Ollama) |
+| `openrouter` | The runtime asks any OpenRouter model. Needs `OPENROUTER_API_KEY`, optional `OPENROUTER_MODEL` |
 
-Running LocalStack on a different port (say 4567)? Set `LOCALSTACK_ENDPOINT` for `make deploy`, `make url`
-and `make test`. Start the container with `GATEWAY_LISTEN=0.0.0.0:4567`,
-`LOCALSTACK_HOST=localhost.localstack.cloud:4567`, and the web function's origin in
-`EXTRA_CORS_ALLOWED_ORIGINS` (`make url` prints it), otherwise LocalStack's CORS check blocks the UI's API calls.
+In `rules` mode the agent pauses a little on each turn (2.5 s by default, slightly different per entity) so the UI shows it working. Change it with `make reset DEMO_THINK_SECONDS=0` (or any number of seconds). The integration tests turn it off.
 
-## Demo script (use the example buttons in the UI)
-
-1. **auto-approve**: $12k laptops from Dell. Watch the agent call lookup_vendor, check_budget, check_policy, then the PO is issued.
-2. Same request with **flaky ERP** ticked: two timeouts with backoff, still one function.
-3. **needs human**: $38k Cisco switches. Execution pauses; click Approve. Reject instead to see the rejection path.
-4. **blocked vendor** and **over limit**: rejected by policy even if the model would approve.
-   **incomplete** (no vendor or amount) ends in NEEDS_INFO instead of a rejection.
-5. Restart LocalStack with persistence while a request waits for approval; it resumes.
+A model mode falls back to the rule planner when the model's output is not usable, and the trace says so.
+`make deploy AGENT_MODEL_MODE=openrouter OPENROUTER_API_KEY=...` (the key becomes an environment variable
+of the AgentCore runtime). `MODEL_MODE=rules` skips AgentCore entirely and plans inside the workflow.
 
 ## Notes
 
-- The web function is a Lambda Web Function: a plain Node.js `http.createServer` app (`nodejs24.x`), not an event handler.
-- By default the agent runtime uses a deterministic planner so the stage demo is fast and repeatable.
-  With `AGENT_MODEL_MODE=bedrock` the model replies with JSON actions; if its output is unparseable the
-  runtime falls back to the planner and the source shows up in the agent trace.
-- If AgentCore is unreachable, the workflow falls back to the in-function planner and the trace says so.
+- The web function is a Lambda Web Function: a plain Node.js `http.createServer` app (`nodejs24.x`), not an event handler. It streams state over Server-Sent Events.
+- The sandbox is a separate, locked-down Lambda (read-only access to the feed files). It has the interface of a Lambda MicroVM (code and inputs in, output out) so it can move to MicroVMs once LocalStack supports them.
+- Seed data is deterministic (`scripts/seed.py`) with planted discrepancies, so every take is identical.
+- The `/api/logs` and `/api/infra` streams (Lambda logs and a live inventory of the LocalStack resources) are available for a deeper "under the hood" view, but the UI does not use them.

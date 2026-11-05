@@ -1,4 +1,4 @@
-"""Close Copilot reconciliation agent as a Bedrock AgentCore Runtime.
+"""Finance Closing Copilot reconciliation agent as a Bedrock AgentCore Runtime.
 
 The runtime is a stateless brain: given the conversation so far it answers with the NEXT action as JSON.
 It never touches a database. Tools, the policy guardrail and every side effect run as checkpointed steps in
@@ -14,12 +14,17 @@ Every model mode falls back to the rule planner when the output is unusable, and
 
 import json
 import os
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import planner
 
 MODE = os.environ.get("AGENT_MODEL_MODE", "rules")
+# Rule mode answers instantly, which looks odd on screen. A model call takes seconds, so the caller can ask for a
+# pause per turn ("thinkSeconds" in the request; the workflow takes it from the demo settings). Slightly different
+# per entity so the three agents do not move in lockstep. Absent or 0: answer at once.
+THINK_SPREAD = {"US": 1.0, "DE": 1.2, "UK": 0.8}
 MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "meta.llama3-8b-instruct-v1:0")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
 
@@ -47,7 +52,7 @@ def ask_openrouter(messages: list) -> str:
 ASK = {"bedrock": (ask_bedrock, "agentcore+bedrock"), "openrouter": (ask_openrouter, f"agentcore+openrouter:{OPENROUTER_MODEL}")}
 
 
-def think(messages: list) -> tuple[dict, str]:
+def think(messages: list, think_seconds: float = 0) -> tuple[dict, str]:
     if MODE in ASK:
         ask, label = ASK[MODE]
         try:
@@ -58,6 +63,7 @@ def think(messages: list) -> tuple[dict, str]:
         except Exception as exc:  # no model available: stay useful
             source = f"agentcore+rules ({type(exc).__name__})"
         return planner.rule_planner(messages), source
+    time.sleep(think_seconds * THINK_SPREAD.get(planner.parse_entity(messages[0][1]), 1.0))
     return planner.rule_planner(messages), "agentcore+rules"
 
 
@@ -80,7 +86,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"error": "not found"})
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
-            action, source = think(body["messages"])
+            action, source = think(body["messages"], float(body.get("thinkSeconds") or 0))
             self._send(200, {"action": action, "source": source})
         except Exception as exc:
             self._send(500, {"error": type(exc).__name__, "message": str(exc)})

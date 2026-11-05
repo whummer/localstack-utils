@@ -11,6 +11,9 @@ Needs LocalStack started with ENABLE_BEDROCK_AGENTCORE=1. Environment:
     AWS_ENDPOINT_URL        LocalStack endpoint
     AGENT_MODEL_MODE        rules (default), bedrock or openrouter: what the agent runtime uses to think
     OPENROUTER_API_KEY      required for openrouter mode (OPENROUTER_MODEL picks the model)
+    AGENT_SESSION_MAX_LIFETIME  seconds an agent session container may live (default 300, min 60).
+                            LocalStack only implements maxLifetime (idle timeout is a TODO), so this is what
+                            keeps idle session containers from piling up
 """
 
 import hashlib
@@ -65,6 +68,16 @@ def ensure_role() -> str:
     return f"arn:aws:iam::{ACCOUNT}:role/{ROLE}"
 
 
+def wait_deleted() -> None:
+    """Deleting a runtime stops its session containers, which takes a while; creating the replacement
+    before that finishes fails because the name is still taken."""
+    for _ in range(60):
+        if find_runtime() is None:
+            return
+        time.sleep(1)
+    raise SystemExit(f"runtime {NAME} was not deleted in time")
+
+
 def wait_ready(runtime_id: str) -> None:
     for _ in range(60):
         status = control.get_agent_runtime(agentRuntimeId=runtime_id)
@@ -86,6 +99,8 @@ def main() -> None:
     image = build_image()
     mode = os.environ.get("AGENT_MODEL_MODE", "rules")
     env = {"AGENT_MODEL_MODE": mode}
+    max_lifetime = max(60, int(os.environ.get("AGENT_SESSION_MAX_LIFETIME", "300")))
+    lifecycle = {"idleRuntimeSessionTimeout": 60, "maxLifetime": max_lifetime}
     if mode == "openrouter":
         if not os.environ.get("OPENROUTER_API_KEY"):
             raise SystemExit("AGENT_MODEL_MODE=openrouter needs OPENROUTER_API_KEY")
@@ -95,12 +110,13 @@ def main() -> None:
         current = control.get_agent_runtime(agentRuntimeId=existing["agentRuntimeId"])
         same_image = current["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] == image
         same_mode = current.get("environmentVariables", {}) == env
-        if same_image and same_mode:
+        same_lifecycle = current.get("lifecycleConfiguration") == lifecycle
+        if same_image and same_mode and same_lifecycle:
             print(existing["agentRuntimeArn"])
             return
         # UpdateAgentRuntime is not emulated yet: replace the runtime instead.
         control.delete_agent_runtime(agentRuntimeId=existing["agentRuntimeId"])
-        time.sleep(2)
+        wait_deleted()
 
     created = control.create_agent_runtime(
         agentRuntimeName=NAME,
@@ -110,6 +126,7 @@ def main() -> None:
         networkConfiguration={"networkMode": "PUBLIC"},
         protocolConfiguration={"serverProtocol": "HTTP"},
         environmentVariables=env,
+        lifecycleConfiguration=lifecycle,
     )
     wait_ready(created["agentRuntimeId"])
     print(created["agentRuntimeArn"])

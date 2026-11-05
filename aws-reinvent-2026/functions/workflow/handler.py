@@ -1,4 +1,4 @@
-"""Close Copilot: month-end close for three entities, orchestrated by ONE durable Lambda function.
+"""Finance Closing Copilot: month-end close for three entities, orchestrated by ONE durable Lambda function.
 
 Every entity gets its own AI reconciliation agent. The agent's brain runs as a Bedrock AgentCore Runtime
 (see functions/agent); the code it writes runs in an isolated sandbox function; this function owns the
@@ -97,12 +97,12 @@ def set_status(cid: str, status: str, detail: str | None = None) -> None:
     if detail is not None:
         sets.append("detail = :d")
         vals[":d"] = {"S": detail}
-    ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET " + ", ".join(sets),
+    run_update(cid, UpdateExpression="SET " + ", ".join(sets),
                     ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues=vals)
 
 
 def append(cid: str, attr: str, entry: dict) -> None:
-    ddb.update_item(TableName=RUNS, Key=key(cid),
+    run_update(cid,
                     UpdateExpression=f"SET {attr} = list_append(if_not_exists({attr}, :e), :t)",
                     ExpressionAttributeValues={":e": {"L": []}, ":t": {"L": [ser(entry)]}})
 
@@ -113,7 +113,14 @@ def log(msg: str) -> None:
 
 
 def trace(cid: str, entity: str, kind: str, text: str, code: str | None = None) -> None:
-    log(f"[{entity}] {kind}: {text}")
+    if kind == "llm":  # "[source] {json}" -> "agent [source] -> action", readable in the log pane
+        src, _, rest = text.partition("] ")
+        try:
+            log(f"[{entity}] agent {src}] -> {json.loads(rest)['action']}")
+        except (ValueError, KeyError, TypeError):
+            log(f"[{entity}] {kind}: {text}")
+    else:
+        log(f"[{entity}] {kind}: {text}")
     entry = {"entity": entity, "kind": kind, "text": text[:700], "ts": now_ms()}
     if code:
         entry["code"] = code
@@ -129,15 +136,19 @@ class RunGone(Exception):
     """The run row was deleted (demo reset): stop quietly instead of retrying forever."""
 
 
+def run_update(cid: str, **kwargs) -> None:
+    """Update a run row, but never create one: a leftover execution must not resurrect a reset run."""
+    try:
+        ddb.update_item(TableName=RUNS, Key=key(cid), ConditionExpression="attribute_exists(closeId)", **kwargs)
+    except ddb.exceptions.ConditionalCheckFailedException:
+        raise RunGone(cid) from None
+
+
 def set_entity(cid: str, entity: str, **fields) -> None:
     names = {"#e": entity, **{f"#{k}": k for k in fields}}
     vals = {f":{k}": ser(v) for k, v in fields.items()}
-    try:
-        ddb.update_item(TableName=RUNS, Key=key(cid), ConditionExpression="attribute_exists(closeId)",
-                        UpdateExpression="SET " + ", ".join(f"entities.#e.#{k} = :{k}" for k in fields),
-                        ExpressionAttributeNames=names, ExpressionAttributeValues=vals)
-    except ddb.exceptions.ConditionalCheckFailedException:
-        raise RunGone(cid) from None
+    run_update(cid, UpdateExpression="SET " + ", ".join(f"entities.#e.#{k} = :{k}" for k in fields),
+               ExpressionAttributeNames=names, ExpressionAttributeValues=vals)
 
 
 def take_chaos(attr: str) -> bool:
@@ -151,6 +162,12 @@ def take_chaos(attr: str) -> bool:
         return False
 
 
+def think_seconds() -> float:
+    """Demo setting: how long an agent turn pretends to think (seeded as 2.5; tests set 0)."""
+    item = ddb.get_item(TableName=CONFIG, Key={"key": {"S": "demo"}}).get("Item", {})
+    return float(item.get("thinkSeconds", {}).get("N", 0))
+
+
 def erp_is_down() -> bool:
     item = ddb.get_item(TableName=CONFIG, Key={"key": {"S": "chaos"}}).get("Item", {})
     return bool(item.get("erpDown", {}).get("BOOL"))
@@ -160,12 +177,13 @@ def erp_is_down() -> bool:
 
 
 @durable_step
-def check_feed(step: StepContext, cid: str, period: str, entity: str) -> bool:
+def check_feed(step: StepContext, cid: str, period: str, entity: str, polls: int) -> bool:
     try:
         s3.head_object(Bucket=BUCKET, Key=f"feeds/{period}/{entity}/bank.csv")
         return True
     except s3.exceptions.ClientError:
-        log(f"[{entity}] bank feed not there yet, waiting (zero compute)")
+        if polls == 0:  # one line, not one per poll
+            log(f"[{entity}] bank feed not there yet, waiting (zero compute)")
         set_entity(cid, entity, status="WAITING_FEED", step="waiting for the bank feed (zero compute)")
         return False
 
@@ -174,12 +192,13 @@ def check_feed(step: StepContext, cid: str, period: str, entity: str) -> bool:
 def llm_turn(step: StepContext, cid: str, entity: str, messages: list) -> dict:
     """One agent turn. Checkpointed: a replay never calls the agent (or its model) again."""
     action, source = None, "rules"
+    set_entity(cid, entity, status="RECONCILING", step="agent is thinking")
     if MODEL_MODE == "agentcore" and AGENT_RUNTIME_ARN:
         try:
             out = agentcore.invoke_agent_runtime(
                 agentRuntimeArn=AGENT_RUNTIME_ARN,
-                runtimeSessionId=f"close-{cid}-{entity}-session-0000000000",  # one session per entity (min 33 chars)
-                payload=json.dumps({"messages": messages}).encode(),
+                runtimeSessionId=f"close-session-{cid}-0000000000",  # one session (one runtime container) per close; the brain is stateless (min 33 chars)
+                payload=json.dumps({"messages": messages, "thinkSeconds": think_seconds()}).encode(),
                 contentType="application/json", accept="application/json",
             )
             answer = json.loads(out["response"].read())
@@ -189,6 +208,7 @@ def llm_turn(step: StepContext, cid: str, entity: str, messages: list) -> dict:
     if action is None:
         action = rule_planner(messages)
     trace(cid, entity, "llm", f"[{source}] {json.dumps(action)}")
+    set_entity(cid, entity, step=f"agent chose {action['action']}")
     return action
 
 
@@ -196,6 +216,7 @@ def llm_turn(step: StepContext, cid: str, entity: str, messages: list) -> dict:
 def run_tool(step: StepContext, cid: str, period: str, entity: str, action: dict, results: dict) -> dict:
     name, args = action["action"], action.get("args", {})
     if name == "fetch_feeds":
+        set_entity(cid, entity, step="loading feeds from S3")
         keys, counts = {}, {}
         for kind, fname in (("ledger", "ledger.csv"), ("bank", "bank.csv")):
             keys[kind] = f"feeds/{period}/{entity}/{fname}"
@@ -205,8 +226,10 @@ def run_tool(step: StepContext, cid: str, period: str, entity: str, action: dict
         set_entity(cid, entity, status="RECONCILING", step="feeds loaded")
         trace(cid, entity, "tool", f"fetch_feeds -> ledger {counts['ledger']} rows, bank {counts['bank']} rows")
     elif name == "run_analysis":
+        set_entity(cid, entity, step="running code in the sandbox")
         out = analyse(cid, entity, results["fetch_feeds"]["keys"], args.get("code"))
     elif name == "draft_journals":
+        set_entity(cid, entity, step="drafting journals")
         analysis = results["run_analysis"]
         journals = draft_journals(entity, ENTITIES[entity], analysis["items"], str(args.get("plugAccount", "")))
         out = {"count": len(journals), "journals": journals}
@@ -235,7 +258,7 @@ def analyse(cid: str, entity: str, keys: dict, code: str | None) -> dict:
             trace(cid, entity, "sandbox", body["stdout"].strip() or "(no output)", code=src)
             set_entity(cid, entity, matchRate=analysis["matchRate"], matched=analysis["matched"],
                        unmatched=len(analysis["items"]), step="analysis complete")
-            ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET analysis.#e = :a",
+            run_update(cid, UpdateExpression="SET analysis.#e = :a",
                             ExpressionAttributeNames={"#e": entity},
                             ExpressionAttributeValues={":a": ser({**analysis, "stdout": body["stdout"]})})
             return analysis
@@ -258,16 +281,16 @@ def store_entity_result(step: StepContext, cid: str, entity: str, journals: list
 @durable_step
 def record_decision(step: StepContext, cid: str, journals: list, total: int, required: bool, reason: str, line: str) -> None:
     trace(cid, "ALL", "guardrail", line)
-    ddb.update_item(
-        TableName=RUNS, Key=key(cid),
+    run_update(
+        cid,
         UpdateExpression="SET journals = :j, totalUsdCents = :t, approval = :a",
         ExpressionAttributeValues={":j": ser(journals), ":t": ser(total), ":a": ser({"required": required, "reason": reason})})
 
 
 @durable_step
 def request_approval(step: StepContext, cid: str, callback_id: str, reason: str) -> None:
-    ddb.update_item(
-        TableName=RUNS, Key=key(cid),
+    run_update(
+        cid,
         UpdateExpression="SET callbackId = :c, #s = :s, detail = :d, updatedAt = :u",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":c": {"S": callback_id}, ":s": {"S": "AWAITING_APPROVAL"},
@@ -289,7 +312,7 @@ def post_journals(step: StepContext, cid: str, journals: list) -> int:
             "amountCents": ser(j["amountCents"]), "entity": {"S": j["entity"]}})
         j["status"] = "POSTED"
     set_status(cid, "POSTING", f"posted {len(todo)} journals to the ERP")
-    ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET journals = :j",
+    run_update(cid, UpdateExpression="SET journals = :j",
                     ExpressionAttributeValues={":j": ser(journals)})
     return len(todo)
 
@@ -306,7 +329,7 @@ def reverse_postings(step: StepContext, cid: str, journals: list) -> int:
     for j in journals:
         if j["status"] == "POSTED" or any(p["journalId"]["S"].endswith(j["id"]) for p in posted):
             j["status"] = "REVERSED"
-    ddb.update_item(TableName=RUNS, Key=key(cid), UpdateExpression="SET journals = :j",
+    run_update(cid, UpdateExpression="SET journals = :j",
                     ExpressionAttributeValues={":j": ser(journals)})
     trace(cid, "ALL", "system", f"ERP stayed down: saga reversed {len(posted)} posted journal(s)")
     audit(cid, "saga", f"reversed {len(posted)} journal(s) after the ERP failed")
@@ -338,7 +361,7 @@ def finish(step: StepContext, cid: str, status: str, detail: str, actor: str = "
 def reconcile_entity(ctx: DurableContext, cid: str, period: str, entity: str) -> dict:
     """One entity's branch: wait for the bank feed, then run the agent loop."""
     polls = 0
-    while not ctx.step(check_feed(cid, period, entity), name=f"{entity}-check-feed-{polls}"):
+    while not ctx.step(check_feed(cid, period, entity, polls), name=f"{entity}-check-feed-{polls}"):
         if polls >= FEED_MAX_POLLS:
             raise RuntimeError(f"bank feed for {entity} never arrived")
         ctx.wait(Duration.from_seconds(FEED_POLL_SECONDS), name=f"{entity}-wait-feed-{polls}")

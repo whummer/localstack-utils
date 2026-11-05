@@ -10,10 +10,12 @@ Deterministic on purpose, so every take of the demo is identical. Planted discre
   UK  2 timing differences, 1 bank fee
 
 Usage: seed.py [--period 2026-10]   (AWS_ENDPOINT_URL selects the LocalStack instance)
+       DEMO_THINK_SECONDS=0 seed.py  turns off the simulated agent thinking time (default 2.5 s per agent turn)
 """
 
 import csv
 import io
+import os
 import random
 import sys
 
@@ -94,7 +96,7 @@ def stop_running_closes() -> int:
     return stopped
 
 
-def main() -> None:
+def main(think_seconds: float | None = None) -> None:
     s3, ddb = boto3.client("s3"), boto3.client("dynamodb")
     stopped = stop_running_closes()
     if stopped:
@@ -112,7 +114,9 @@ def main() -> None:
     clear_table(ddb, "close-postings", "journalId")
     ddb.put_item(TableName="close-config", Item={
         "key": {"S": "chaos"}, "killSandbox": {"N": "0"}, "erpFailures": {"N": "0"}, "erpDown": {"BOOL": False}})
-    print(f"seeded period {PERIOD}: feeds for US, DE, UK (DE bank feed held in staging/)")
+    think = think_seconds if think_seconds is not None else float(os.environ.get("DEMO_THINK_SECONDS", "2.5"))
+    ddb.put_item(TableName="close-config", Item={"key": {"S": "demo"}, "thinkSeconds": {"N": str(think)}})
+    print(f"seeded period {PERIOD}: feeds for US, DE, UK (DE bank feed held in staging/), agent think time {think}s")
 
 
 if __name__ == "__main__":

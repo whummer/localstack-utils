@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Close Copilot - month-end close with AI agents (Lambda Web Function UI, durable function, AgentCore agents, sandbox function, DynamoDB, S3, SNS, SQS)'
+Description: 'Finance Closing Copilot - month-end close with AI agents (Lambda Web Function UI, durable function, AgentCore agents, sandbox function, DynamoDB, S3, SNS, SQS)'
 
 Parameters:
   CodeBucket: {Type: String}
@@ -95,6 +95,7 @@ Resources:
                   - lambda:InvokeFunction
                   - lambda:GetFunctionConfiguration
                   - lambda:ListDurableExecutionsByFunction
+                  - lambda:StopDurableExecution
                   - lambda:CheckpointDurableExecution
                   - lambda:GetDurableExecutionState
                   - lambda:GetDurableExecutionHistory
@@ -181,7 +182,7 @@ Resources:
     Type: AWS::Lambda::WebFunctionRevision
     Properties:
       FunctionName: !Ref WebFunction
-      Description: Close Copilot UI, API and SSE stream
+      Description: Finance Closing Copilot UI, API and SSE stream
       BuildConfig:
         RuntimeConfig: {Runtime: nodejs24.x}
         CodeConfig:

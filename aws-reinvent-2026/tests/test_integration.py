@@ -1,4 +1,4 @@
-"""End-to-end tests for Close Copilot against a deployed stack (run `make deploy` first).
+"""End-to-end tests for Finance Closing Copilot against a deployed stack (run `make deploy` first).
 
 Talks to the Lambda web function over HTTP like the browser does; endpoint and
 credentials come from the usual AWS_ENDPOINT_URL / AWS_* environment variables.
@@ -19,8 +19,8 @@ import seed  # noqa: E402  (resets the demo data)
 
 @pytest.fixture(autouse=True)
 def fresh_demo_data():
-    """Every test starts from the seeded data: no runs, no chaos, DE bank feed held back."""
-    seed.main()
+    """Every test starts from the seeded data: no runs, no chaos, DE bank feed held back. No simulated thinking time."""
+    seed.main(think_seconds=0)
 
 
 @pytest.fixture(scope="session")
@@ -80,7 +80,7 @@ def reach_approval(api):
 
 def test_web_function_serves_ui(base_url):
     html = urllib.request.urlopen(base_url + "/", timeout=30).read().decode()
-    assert "Close Copilot" in html
+    assert "Finance Closing Copilot" in html
 
 
 def test_late_feed_parks_only_that_entity_then_close_completes(api):

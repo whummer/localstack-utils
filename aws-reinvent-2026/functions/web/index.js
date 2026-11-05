@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Close Copilot frontend: a plain Node.js HTTP server running as an AWS Lambda Web Function.
+ * Finance Closing Copilot frontend: a plain Node.js HTTP server running as an AWS Lambda Web Function.
  * Lambda tells us where to listen through AWS_LAMBDA_HTTP_ENDPOINT ("host:port") and forwards
  * requests as plain HTTP, so there is no event handler and response streaming works out of the box.
  *
@@ -19,14 +19,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const {
-  DynamoDBClient, ScanCommand, GetItemCommand, PutItemCommand, UpdateItemCommand,
+  DynamoDBClient, ScanCommand, GetItemCommand, PutItemCommand, UpdateItemCommand, DeleteItemCommand,
 } = require("@aws-sdk/client-dynamodb");
 const { CloudWatchLogsClient, FilterLogEventsCommand } = require("@aws-sdk/client-cloudwatch-logs");
 const { SQSClient, GetQueueUrlCommand, GetQueueAttributesCommand } = require("@aws-sdk/client-sqs");
 const { S3Client, ListObjectsV2Command, CopyObjectCommand, DeleteObjectCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
 const {
   LambdaClient, InvokeCommand, GetDurableExecutionHistoryCommand, GetFunctionConfigurationCommand,
-  ListDurableExecutionsByFunctionCommand,
+  ListDurableExecutionsByFunctionCommand, StopDurableExecutionCommand,
   SendDurableExecutionCallbackSuccessCommand,
 } = require("@aws-sdk/client-lambda");
 const { marshall, unmarshall } = require("@aws-sdk/util-dynamodb");
@@ -88,7 +88,7 @@ const CURRENCY = { US: "USD", DE: "EUR", UK: "GBP" };
 
 async function listRuns(limit = 3) {
   const { Items = [] } = await ddb.send(new ScanCommand({ TableName: RUNS }));
-  const rows = Items.map((i) => unmarshall(i)).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+  const rows = Items.map((i) => unmarshall(i)).filter((r) => r.createdAt).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
   await Promise.all(rows.map(async (r) => { r.timeline = r.executionArn ? await timeline(r.executionArn) : []; }));
   return rows;
 }
@@ -131,7 +131,25 @@ async function deliverFeed(res, entity) {
   json(res, 200, { ok: true });
 }
 
+// A new close starts from a clean slate, like the first take: stop closes still running, forget old
+// postings and hold the DE bank feed back again so the "late feed" beat plays. Chaos switches stay as set.
+async function freshStart() {
+  const running = await lambda.send(new ListDurableExecutionsByFunctionCommand({
+    FunctionName: WORKFLOW, Statuses: ["RUNNING"], MaxItems: 50 })).catch(() => ({}));
+  await Promise.all((running.DurableExecutions || []).map((x) =>
+    lambda.send(new StopDurableExecutionCommand({ DurableExecutionArn: x.DurableExecutionArn })).catch(() => null)));
+  const { Items = [] } = await ddb.send(new ScanCommand({ TableName: POSTINGS, ProjectionExpression: "journalId" }));
+  await Promise.all(Items.map((i) => ddb.send(new DeleteItemCommand({ TableName: POSTINGS, Key: { journalId: i.journalId } }))));
+  const feed = `feeds/${PERIOD}/DE/bank.csv`, staged = `staging/${PERIOD}/DE/bank.csv`;
+  const there = await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: feed })).then(() => true, () => false);
+  if (there) {
+    await s3.send(new CopyObjectCommand({ Bucket: BUCKET, CopySource: `${BUCKET}/${feed}`, Key: staged }));
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: feed }));
+  }
+}
+
 async function startClose(res, body) {
+  await freshStart();
   const period = String(body.period || PERIOD);
   const closeId = `close-${period}-${crypto.randomBytes(2).toString("hex")}`;
   const now = Date.now();
@@ -171,18 +189,24 @@ async function decide(res, closeId, body) {
 
 // Server-Sent Events: push a snapshot whenever a run, the agent trace, the durable timeline
 // or the chaos state changes, so the UI follows the agents live without polling.
+// One connection per browser tab carries both the state snapshots and the Lambda logs (browsers allow
+// only 6 HTTP/1.1 connections per host, so two streams per tab would starve a few open tabs).
 async function stream(req, res) {
   res.writeHead(200, {
     "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no",
   });
-  let open = true;
-  req.on("close", () => { open = false; });
+  const conn = { open: true, deadline: Date.now() + STREAM_SECONDS * 1000 };
+  req.on("close", () => { conn.open = false; });
   res.write("retry: 1000\n\n");
+  await Promise.all([snapshotLoop(res, conn), logLoop(res, conn)]);
+  res.end();
+}
+
+async function snapshotLoop(res, conn) {
   let last = "";
-  const deadline = Date.now() + STREAM_SECONDS * 1000;
-  while (open && Date.now() < deadline) {
+  while (conn.open && Date.now() < conn.deadline) {
     try {
-      const [runs, chaos, held] = await Promise.all([listRuns(), getChaos(), heldFeeds()]);
+      const [runs, chaos, held] = await Promise.all([listRuns(1), getChaos(), heldFeeds()]);
       const snapshot = JSON.stringify({ runs, chaos, heldFeeds: held, agentMode: AGENT_MODE });
       if (snapshot !== last) {
         last = snapshot;
@@ -196,13 +220,16 @@ async function stream(req, res) {
     }
     await sleep(500);
   }
-  res.end();
 }
 
 // Tail the CloudWatch Logs groups LocalStack writes for each Lambda, so the UI can show what the
 // functions print while they run. Durable-SDK JSON log lines are flattened to "LEVEL message".
 const LOG_GROUPS = { workflow: "/aws/lambda/close-workflow", sandbox: "/aws/lambda/close-sandbox", notifier: "/aws/lambda/close-notifier" };
-const NOISE = /^(START|END|REPORT) RequestId/;
+// Lines that carry no information for a viewer. The checkpoint messages are what the durable SDK logs when
+// an execution is stopped (make reset) while an invocation is still in flight.
+const NOISE = /^(START|END|REPORT) RequestId|^Found (credentials|endpoint)|^(Failed to checkpoint|Checkpoint (batch )?processing failed)/;
+const FAILED_STEP = /^❌ failed step for id: [0-9a-f]+, name: (.+)$/;
+const BACKFILL_SECONDS = Number(process.env.LOG_BACKFILL_SECONDS || 5);  // enough to bridge an SSE reconnect
 
 function logLine(raw) {
   const text = String(raw).replace(/\s+$/, "");
@@ -210,24 +237,31 @@ function logLine(raw) {
   if (text.startsWith("{")) {
     try {
       const j = JSON.parse(text);
-      if (j.message) return { level: String(j.level || "INFO"), text: String(j.message) };
+      const msg = String(j.message || j.errorMessage || "").trim();
+      if (!msg || NOISE.test(msg)) return null;
+      const step = FAILED_STEP.exec(msg);
+      return { level: String(j.level || "INFO"), text: step ? `step failed: ${step[1]} (the durable function retries it)` : msg };
     } catch { /* plain text line */ }
   }
-  return { level: /error|traceback|exception/i.test(text) ? "ERROR" : "INFO", text };
+  return { level: /\b(error|traceback|exception)\b/i.test(text) ? "ERROR" : "INFO", text };
 }
 
-async function logs_(req, res) {
+async function logs_(req, res) {   // standalone variant (curl, tests); the UI uses /api/stream
   res.writeHead(200, {
     "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no",
   });
-  let open = true;
-  req.on("close", () => { open = false; });
+  const conn = { open: true, deadline: Date.now() + STREAM_SECONDS * 1000 };
+  req.on("close", () => { conn.open = false; });
   res.write("retry: 1000\n\n");
-  const since = Date.now() - 20000;
+  await logLoop(res, conn);
+  res.end();
+}
+
+async function logLoop(res, conn) {
+  const since = Date.now() - BACKFILL_SECONDS * 1000;
   const cursor = Object.fromEntries(Object.keys(LOG_GROUPS).map((k) => [k, since]));
   const seen = new Set();
-  const deadline = Date.now() + STREAM_SECONDS * 1000;
-  while (open && Date.now() < deadline) {
+  while (conn.open && Date.now() < conn.deadline) {
     const batch = [];
     await Promise.all(Object.entries(LOG_GROUPS).map(async ([fn, group]) => {
       try {
@@ -252,7 +286,6 @@ async function logs_(req, res) {
     }
     await sleep(1000);
   }
-  res.end();
 }
 
 // Live inventory of what runs behind the demo, for the UI's "Under the hood" panel. Every probe is
