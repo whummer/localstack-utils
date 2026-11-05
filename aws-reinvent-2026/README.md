@@ -5,6 +5,11 @@
 A month-end close for three legal entities (US, DE, UK), run by AI agents inside an
 AWS Lambda **durable function**, with a **Lambda web function** UI. Everything runs locally on LocalStack.
 
+The UI is one screen made for recording: four big stages, one card per entity, big buttons, a live
+architecture diagram that lights up the services working at each step (with a one-line explanation),
+and a terminal that tails the Lambda logs from CloudWatch. The right side ("Behind the scenes") is the
+infrastructure, the left side is the app.
+
 The story in four steps:
 
 1. **Collect**: bank feeds come in. One is late, so that entity pauses at zero compute.
@@ -55,7 +60,10 @@ for the make targets.
 
 ## Demo script
 
-1. **Start the October close.** US and UK reconcile. DE stops and says its bank feed is late.
+Pressing **Start** always begins from a clean slate (old postings cleared, DE bank feed held back again,
+running closes stopped), so every take plays the same. The chaos switches keep their setting.
+
+1. **Start the October close.** US and UK reconcile, each card shows what its agent is doing (thinking, loading feeds, running code in the sandbox). DE stops and says its bank feed is late.
 2. **Deliver the DE bank feed.** DE resumes. Each entity shows its match rate.
 3. **Policy overrides the agent.** One drafted journal books an unexplained receipt to Retained Earnings (restricted). Policy blocks it and the controller has to sign off.
 4. **Approve.** The books close.
@@ -80,4 +88,7 @@ of the AgentCore runtime). `MODEL_MODE=rules` skips AgentCore entirely and plans
 - The web function is a Lambda Web Function: a plain Node.js `http.createServer` app (`nodejs24.x`), not an event handler. It streams state over Server-Sent Events.
 - The sandbox is a separate, locked-down Lambda (read-only access to the feed files). It has the interface of a Lambda MicroVM (code and inputs in, output out) so it can move to MicroVMs once LocalStack supports them.
 - Seed data is deterministic (`scripts/seed.py`) with planted discrepancies, so every take is identical.
-- The `/api/logs` and `/api/infra` streams (Lambda logs and a live inventory of the LocalStack resources) are available for a deeper "under the hood" view, but the UI does not use them.
+- One Server-Sent Events connection per browser tab (`/api/stream`) carries both the state snapshots and the Lambda logs, because browsers allow only 6 HTTP/1.1 connections per host. Background tabs close their stream and reconnect when shown.
+- `/api/logs` (Lambda logs alone) and `/api/infra` (a live inventory of the LocalStack resources) are available for `curl` and the tests, but the UI does not use them.
+- Every update to a run goes through one helper that never creates a row, so a leftover execution cannot bring a reset run back.
+- `make reset` is the full wipe. Docker needs free disk: the demo's containers and images are small, but parallel test suites that pull large images can fill the Docker VM and stall everything (sandbox, logs).

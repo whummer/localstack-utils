@@ -43,7 +43,7 @@ jobs:
       - name: Install awscli and test dependencies
         run: pip install awscli boto3 -r tests/requirements.txt
 
-      - name: Start LocalStack (durable functions, web functions and AgentCore need a Pro license)
+      - name: Start LocalStack (durable functions, web functions and AgentCore need a Pro license; :dev routes DNS inside web function containers)
         env:
           LOCALSTACK_AUTH_TOKEN: ${{ secrets.TEST_LOCALSTACK_AUTH_TOKEN }}
         run: |
@@ -51,7 +51,7 @@ jobs:
             -e LOCALSTACK_AUTH_TOKEN \
             -e ENABLE_BEDROCK_AGENTCORE=1 \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            localstack/localstack-pro:latest
+            localstack/localstack-pro:dev
           for i in $(seq 1 60); do
             curl -sf localhost:4566/_localstack/health >/dev/null && break
             sleep 2
