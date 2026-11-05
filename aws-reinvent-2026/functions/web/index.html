@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Finance Closing Copilot</title>
+<script>(()=>{let t;try{t=localStorage.theme}catch(e){}if(t!=='light'&&t!=='dark')t=matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t})()</script>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--card:#151b33;--fg:#f3f5ff;--mute:#a3abd0;--line:#2c3560;--acc:#7c8cff;
+ --ok:#2fd18a;--okbg:#0f3b2c;--warn:#ffb020;--warnbg:#41300a;--bad:#ff5470;--badbg2:#4a1424;
+ --pol:#c58bff;--polbg:#34194f;--idle:#3a436b;--btnfg:#fff;--shadow:0 6px 24px rgba(0,0,0,.35)}
+:root[data-theme=light]{color-scheme:light;--bg:#f2f4fb;--card:#fff;--fg:#12172b;--mute:#515b85;--line:#cfd5ea;--acc:#3f4fe0;
+ --ok:#0b8f5a;--okbg:#d9f6e8;--warn:#a85f00;--warnbg:#ffefcc;--bad:#d11f45;--badbg2:#ffe0e6;
+ --pol:#7a2bd4;--polbg:#efe0ff;--idle:#b6bddb;--btnfg:#fff;--shadow:0 4px 18px rgba(30,40,90,.12)}
+*{box-sizing:border-box}[hidden]{display:none!important}
+html{font-size:clamp(20px,1.08vw,26px)}
+body{margin:0;background:var(--bg);color:var(--fg);font:1rem/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;transition:background-color .2s,color .2s}
+.wrap{max-width:1840px;margin:0 auto;padding:.7rem 2rem .7rem}
+.top{display:flex;align-items:center;gap:1rem}
+.logo{width:2.4rem;height:2.4rem;border-radius:.65rem;background:linear-gradient(135deg,var(--acc),var(--pol));display:grid;place-items:center;font-size:1.3rem;color:#fff;flex:none}
+h1{margin:0;font-size:1.9rem;letter-spacing:-.01em;line-height:1.1}
+.org{color:var(--mute);font-size:.95rem}
+.right{margin-left:auto;display:flex;align-items:center;gap:.9rem;color:var(--mute);font-size:.75rem}
+.dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;background:var(--idle);margin-right:.35rem}.live .dot{background:var(--ok)}
+.theme{min-height:0;width:2.4rem;height:2.4rem;border-radius:.65rem;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:1.05rem;cursor:pointer}
+.tag{margin:.35rem 0 .7rem;font-size:1.1rem;color:var(--mute)}
+.stages{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;gap:.35rem;align-items:stretch}
+.arrow{align-self:center;font-size:1.3rem;color:var(--idle)}
+.stage{background:var(--card);border:3px solid var(--line);border-radius:1.1rem;padding:.55rem .8rem;display:flex;gap:.6rem;align-items:center;box-shadow:var(--shadow);--g:var(--acc);transition:border-color .25s,background-color .25s}
+.stage .ic{font-size:2rem;line-height:1}
+.stage .t{font-size:1.35rem;font-weight:800;line-height:1.1}.stage .d{font-size:.75rem;color:var(--mute)}
+.stage .st{font-size:.85rem;font-weight:700;margin-top:.15rem;color:var(--mute)}
+.stage.idle{opacity:.72}
+.stage.active{border-color:var(--acc);animation:glow 2s ease-in-out infinite}.stage.active .st{color:var(--acc)}
+.stage.done{border-color:var(--ok);background:var(--okbg)}.stage.done .st{color:var(--ok)}
+.stage.warn{border-color:var(--warn);background:var(--warnbg);--g:var(--warn);animation:glow 2s ease-in-out infinite}.stage.warn .st{color:var(--warn)}
+.stage.bad{border-color:var(--bad);background:var(--badbg2)}.stage.bad .st{color:var(--bad)}
+@keyframes glow{0%{box-shadow:0 0 0 0 var(--g)}70%{box-shadow:0 0 0 .7rem transparent}100%{box-shadow:0 0 0 0 transparent}}
+.ents{display:grid;grid-template-columns:repeat(3,1fr);gap:.9rem;margin-top:.7rem}
+.ent{background:var(--card);border:3px solid var(--line);border-radius:1.1rem;padding:.55rem 1.1rem;box-shadow:var(--shadow);--g:var(--warn);transition:border-color .25s,background-color .25s;min-height:8.6rem}
+.ent .eh{display:flex;align-items:center;gap:.6rem}.ent .flag{font-size:1.8rem}.ent b{font-size:1.5rem}.ent .cur{color:var(--mute);font-size:.85rem;margin-left:auto}
+.ent .es{font-size:1.05rem;font-weight:700;color:var(--mute);margin-top:.15rem}
+.ent .pct{font-size:2.7rem;font-weight:800;line-height:1.05;margin-top:.1rem}.ent .ex{font-size:.95rem;color:var(--mute)}
+.ent .pl{margin-top:.3rem;font-size:.85rem;font-weight:700;color:var(--pol)}
+.ent.wait{border-color:var(--warn);background:var(--warnbg);animation:glow 2s ease-in-out infinite}.ent.wait .es{color:var(--warn)}
+.ent.work{border-color:var(--acc)}.ent.work .es{color:var(--acc)}
+.ent.ready{border-color:var(--ok)}.ent.ready .es{color:var(--ok)}
+.arch{background:var(--card);border:1px solid var(--line);border-radius:.9rem;box-shadow:var(--shadow);padding:.5rem .7rem .55rem}
+.arch h2{margin:0 0 .15rem;font-size:.74rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--acc)}
+.arch svg{display:block;width:100%;height:auto}
+.arch .n rect{fill:var(--card);stroke:var(--idle);stroke-width:2;transition:fill .3s,stroke .3s}
+.arch .n text{fill:var(--mute);font:700 12px system-ui,sans-serif;transition:fill .3s}
+.arch .n .sub{font-weight:500;font-size:9.5px}
+.arch .n.on rect{stroke:var(--acc);fill:var(--okbg);stroke-width:3}.arch .n.on text{fill:var(--fg)}
+.arch .n.warn.on rect{stroke:var(--warn);fill:var(--warnbg)}
+.arch .e{stroke:var(--idle);stroke-width:2;fill:none;transition:stroke .3s}
+.arch .e.on{stroke:var(--acc);stroke-width:3;stroke-dasharray:6 5;animation:flow 1.2s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-22}}
+.arch .cap{margin:.2rem 0 0;font-size:.88rem;line-height:1.3;color:var(--mute)}.arch .cap b{color:var(--fg)}
+.now{margin:0;font-size:1.6rem;font-weight:800;line-height:1.25;min-height:2rem}
+.cols{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:1.2rem;align-items:start}
+.lcol{display:flex;flex-direction:column;gap:.7rem;min-width:0}
+.rcol{display:flex;flex-direction:column;gap:.8rem;min-width:0;min-height:0;align-self:stretch;padding:.2rem 0 .2rem 1.2rem;margin-left:.2rem;border-left:3px dashed var(--idle);background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 7%,transparent),transparent 70%)}
+.rhead{margin:0;font-size:.78rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--mute)}.rhead b{color:var(--acc)}
+.panel{background:var(--card);border:3px solid var(--line);border-radius:1.1rem;padding:.65rem 1.1rem;box-shadow:var(--shadow)}
+.panel h2{margin:0 0 .3rem;font-size:.8rem;letter-spacing:.09em;text-transform:uppercase;color:var(--mute)}
+.stack{display:grid;gap:.7rem}
+.btn{min-height:64px;font:inherit;font-size:1.1rem;font-weight:800;border:0;border-radius:1rem;padding:.55rem 1.6rem;cursor:pointer;color:var(--btnfg);background:var(--acc);width:100%;transition:filter .15s,transform .05s}
+.btn:hover{filter:brightness(1.1)}.btn:active{transform:translateY(1px)}.btn:disabled{opacity:.5;cursor:default}
+.btn.go{font-size:1.4rem;min-height:84px}.btn.ok{background:var(--ok);color:#04251a}.btn.no{background:var(--bad)}.btn.amber{background:var(--warn);color:#2b1a00}
+:root[data-theme=light] .btn.ok{color:#fff}:root[data-theme=light] .btn.amber{color:#fff}
+.btn:focus-visible,.theme:focus-visible{outline:4px solid var(--fg);outline-offset:3px}
+.appr{border-color:var(--pol);background:var(--polbg)}
+.nums{display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;text-align:center;margin:.2rem 0 .6rem}
+.nums b{display:block;font-size:2.2rem;line-height:1.05}.nums span{font-size:.8rem;color:var(--mute)}
+.nums .bl b{color:var(--pol)}
+.polline{font-size:.95rem;font-weight:700;margin:.1rem 0 .6rem;color:var(--pol)}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:.7rem}
+.banner{border-radius:1.1rem;padding:1rem 1.3rem;font-size:1.8rem;font-weight:800;text-align:center;border:3px solid}
+.banner.ok{background:var(--okbg);border-color:var(--ok);color:var(--ok)}
+.banner.warn{background:var(--warnbg);border-color:var(--warn);color:var(--warn)}
+.banner.bad{background:var(--badbg2);border-color:var(--bad);color:var(--bad)}
+.term{--t-bg:#0a0e18;--t-fg:#d9def5;--t-mute:#7d86ad;--t-line:#222a45;flex:1;min-height:12rem;display:flex;flex-direction:column;background:var(--t-bg);color:var(--t-fg);border:1px solid #2b3354;border-radius:.9rem;box-shadow:var(--shadow);overflow:hidden}
+.term-bar{display:flex;align-items:center;gap:.6rem;padding:.4rem .5rem .4rem .9rem;border-bottom:1px solid var(--t-line);font:.72rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--t-mute);letter-spacing:.02em}
+.term-bar button{margin-left:auto;min-height:0;font:inherit;color:var(--t-fg);background:transparent;border:1px solid var(--t-line);border-radius:.4rem;padding:.3rem .65rem;cursor:pointer}
+.term-bar button:hover{background:#161c33}.term-bar button:focus-visible{outline:3px solid #d9def5;outline-offset:2px}
+.term-body{position:relative;flex:1;min-height:10rem}
+.term.closed{flex:none;min-height:0}.term.closed .term-body{display:none}.term.closed .term-bar{border-bottom:0}
+#log{position:absolute;inset:0;overflow:auto;padding:.5rem .9rem;font:.82rem/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-ligatures:none;scrollbar-width:thin;scrollbar-color:#2b3354 transparent}
+.l{display:grid;grid-template-columns:5.2em 6.4em minmax(0,1fr);gap:.7em;padding:.04rem 0}
+.l .tm{color:var(--t-mute)}.l .fn{font-weight:700}
+.fn.workflow{color:#7aa2ff}.fn.sandbox{color:#ffb020}.fn.notifier{color:#2fd18a}
+.l .tx{min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
+.l.guard .tx{color:#d7a3ff;font-weight:700}.l.bad .tx{color:#ff6b86}.l.mute .tx{color:var(--t-mute)}.l.stat .tx{color:#fff;font-weight:700}
+.l.ph{display:block;color:var(--t-mute)}
+.chaos .row{display:grid;grid-template-columns:1fr 1fr;gap:.7rem}
+.hint{font-size:.75rem;color:var(--mute);margin-top:.25rem;padding-left:.3rem}
+.btn.tog{background:var(--card);color:var(--fg);border:3px solid var(--line)}
+.btn.tog[aria-pressed=true]{background:var(--bad);border-color:var(--bad);color:#fff}
+.foot{margin-top:.6rem;color:var(--mute);font-size:.72rem;text-align:center}
+#err{position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);background:var(--bad);color:#fff;font-weight:700;padding:.6rem 1.2rem;border-radius:.8rem;z-index:5}
+@media(min-width:1101px){.wrap{min-height:100vh;display:flex;flex-direction:column}.cols{flex:1;min-height:0}}
+@media(max-width:1100px){.rcol{border-left:0;border-top:3px dashed var(--idle);padding:.8rem 0 0;margin:0;background:none}.chaos .row{grid-template-columns:1fr}.stages{grid-template-columns:1fr 1fr}.arrow{display:none}.ents{grid-template-columns:1fr}.cols{grid-template-columns:1fr}.rcol{align-self:auto}.term{flex:none}.term-body{min-height:18rem}.ent{min-height:0}h1{font-size:1.5rem}.now{font-size:1.4rem}}
+body.boot *{transition:none!important;animation:none!important}
+body.boot main,body.boot .wrap{visibility:hidden}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body class="boot">
+<div class="wrap">
+ <header class="top">
+  <div class="logo" aria-hidden="true">✓</div>
+  <div><h1>Finance Closing Copilot</h1><div class="org">Northwind Group · October 2026</div></div>
+  <div class="right"><span id="live" title="The page streams live updates from the Lambda web function over Server-Sent Events."><i class="dot"></i><span id="livet">connecting</span></span><span id="brain" title="How the agents think: rules = deterministic planner, bedrock or openrouter = a real model. Always runs inside AgentCore Runtime."></span>
+   <button class="theme" id="theme" aria-label="Toggle dark or light mode" title="Dark / light"></button></div>
+ </header>
+ <p class="tag">AI agents close the books. Policy has the last word. People sign off.</p>
+
+ <div class="cols">
+  <div class="lcol">
+ <section class="stages" aria-label="Workflow stages">
+  <div class="stage idle" id="s0" title="A durable function waits on S3 until each entity's bank feed has arrived. Waiting costs no compute."><div class="ic" aria-hidden="true">📥</div><div><div class="t">Collect</div><div class="d">bank feeds</div><div class="st"></div></div></div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="stage idle" id="s1" title="One branch per entity. Each branch asks an AI agent (Bedrock AgentCore Runtime) what to do next, and the agent's code runs in a sandbox Lambda."><div class="ic" aria-hidden="true">🤖</div><div><div class="t">Reconcile</div><div class="d">AI agents</div><div class="st"></div></div></div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="stage idle" id="s2" title="Plain code checks every journal against policy. If anything is blocked, the durable function pauses on a callback until a person signs off."><div class="ic" aria-hidden="true">⚖️</div><div><div class="t">Approve</div><div class="d">policy + human</div><div class="st"></div></div></div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="stage idle" id="s3" title="Each journal is posted to the ERP as its own checkpointed, retried step. If the ERP stays down, a saga reverses what was posted."><div class="ic" aria-hidden="true">🏦</div><div><div class="t">Post</div><div class="d">to the ERP</div><div class="st"></div></div></div>
+ </section>
+
+ <section class="ents" aria-label="Entities">
+  <div class="ent" id="e-US" title="One AgentCore agent session per entity. It reconciles the ledger against the bank, and its code runs in an isolated sandbox Lambda."><div class="eh"><span class="flag">🇺🇸</span><b>US</b><span class="cur">USD</span></div><div class="es"></div><div class="pct"></div><div class="ex"></div><div class="pl" hidden></div></div>
+  <div class="ent" id="e-DE" title="One AgentCore agent session per entity. It reconciles the ledger against the bank, and its code runs in an isolated sandbox Lambda."><div class="eh"><span class="flag">🇩🇪</span><b>DE</b><span class="cur">EUR</span></div><div class="es"></div><div class="pct"></div><div class="ex"></div><div class="pl" hidden></div></div>
+  <div class="ent" id="e-UK" title="One AgentCore agent session per entity. It reconciles the ledger against the bank, and its code runs in an isolated sandbox Lambda."><div class="eh"><span class="flag">🇬🇧</span><b>UK</b><span class="cur">GBP</span></div><div class="es"></div><div class="pct"></div><div class="ex"></div><div class="pl" hidden></div></div>
+ </section>
+
+ <div class="now" id="now" aria-live="polite"></div>
+
+  <div class="stack" id="actions">
+   <div class="banner" id="banner" hidden></div>
+   <button class="btn go" id="start"></button>
+   <button class="btn amber go" id="deliver" hidden></button>
+   <div class="panel appr" id="appr" hidden>
+    <div class="nums"><div><b id="nProp">0</b><span>journals proposed</span></div><div class="bl"><b id="nBlk">0</b><span>blocked by policy</span></div><div><b id="nTot">$0</b><span>total to post</span></div></div>
+    <div class="polline" id="polline"></div>
+    <div class="pair"><button class="btn ok" id="approve">Approve</button><button class="btn no" id="reject">Reject</button></div>
+   </div>
+  </div>
+  </div>
+
+  <aside class="rcol" aria-label="Behind the scenes: infrastructure and failure simulation">
+   <h2 class="rhead">Behind the scenes · <b>LocalStack</b></h2>
+   <section class="arch" id="arch" aria-label="Architecture and current step">
+    <h2>What is running</h2><svg viewBox="0 0 600 214" role="img" aria-label="Architecture: browser, Lambda web function, durable function, AgentCore Runtime, sandbox Lambda, S3, DynamoDB, notifications"><path class="e" id="e-bw" d="M92 78H128"/><path class="e" id="e-wd" d="M238 78H268"/><path class="e" id="e-da" d="M408 66L450 36"/><path class="e" id="e-ds" d="M408 90L450 98"/><path class="e" id="e-d3" d="M300 122V158"/><path class="e" id="e-dd" d="M396 122V158"/><path class="e" id="e-dn" d="M408 108L521 158"/><g class="n" id="n-b"><title>You, watching this page</title><rect x="8" y="56" width="84" height="44" rx="9"/><text x="50.0" y="82.0" text-anchor="middle">Browser</text></g><g class="n" id="n-w"><title>Lambda web function: serves this page and streams live updates over Server-Sent Events</title><rect x="128" y="56" width="110" height="44" rx="9"/><text x="183.0" y="76.0" text-anchor="middle">Web function</text><text class="sub" x="183.0" y="89.0" text-anchor="middle">SSE stream</text></g><g class="n" id="n-d"><title>The workflow: checkpointed steps, waits at zero compute, a callback for the controller, retries and a saga</title><rect x="268" y="50" width="140" height="72" rx="9"/><text x="338.0" y="84.0" text-anchor="middle">Durable function</text><text class="sub" x="338.0" y="97.0" text-anchor="middle">close-workflow</text></g><g class="n" id="n-a"><title>Bedrock AgentCore Runtime: the agents decide what to do next</title><rect x="450" y="12" width="140" height="48" rx="9"/><text x="520.0" y="34.0" text-anchor="middle">AgentCore Runtime</text><text class="sub" x="520.0" y="47.0" text-anchor="middle">one agent per entity</text></g><g class="n" id="n-s"><title>Isolated Lambda that runs the code the agent writes</title><rect x="450" y="76" width="140" height="48" rx="9"/><text x="520.0" y="98.0" text-anchor="middle">Sandbox Lambda</text><text class="sub" x="520.0" y="111.0" text-anchor="middle">runs the agent code</text></g><g class="n" id="n-s3"><title>S3: bank feeds and the close package</title><rect x="258" y="158" width="80" height="44" rx="9"/><text x="298.0" y="178.0" text-anchor="middle">S3</text><text class="sub" x="298.0" y="191.0" text-anchor="middle">feeds, package</text></g><g class="n" id="n-ddb"><title>DynamoDB: close state and the ERP postings</title><rect x="348" y="158" width="96" height="44" rx="9"/><text x="396.0" y="178.0" text-anchor="middle">DynamoDB</text><text class="sub" x="396.0" y="191.0" text-anchor="middle">runs, ERP</text></g><g class="n" id="n-n"><title>SNS to SQS to a notifier Lambda</title><rect x="452" y="158" width="138" height="44" rx="9"/><text x="521.0" y="178.0" text-anchor="middle">SNS · SQS</text><text class="sub" x="521.0" y="191.0" text-anchor="middle">notifier Lambda</text></g></svg>
+    <p class="cap" id="archCap"></p>
+   </section>
+   <section class="term" id="term" aria-label="Lambda logs">
+    <div class="term-bar" title="What the Lambda functions print, read from CloudWatch Logs by the web function and pushed to this page over the same live stream."><span>Lambda logs · CloudWatch · live</span><button id="termBtn" aria-controls="log" aria-expanded="true">Hide</button></div>
+    <div class="term-body"><div id="log" role="log" aria-live="off" tabindex="0"><div class="l ph" id="ph">waiting for Lambda logs...</div></div></div>
+   </section>
+   <section class="panel chaos" aria-label="Chaos (Simulation)">
+    <h2>Chaos (Simulation)</h2>
+    <div class="row">
+     <div><button class="btn tog" id="kill" aria-pressed="false" title="The next sandbox run crashes. The durable function retries it on a fresh sandbox. Agent turns that already finished are not repeated.">💥 Kill the sandbox</button><div class="hint">agent code is retried on a fresh sandbox</div></div>
+     <div><button class="btn tog" id="erp" aria-pressed="false" title="The ERP rejects every posting. The durable function retries with backoff, then a saga reverses the journals already posted.">🔌 ERP down</button><div class="hint">posting fails, the saga rolls it back</div></div>
+    </div>
+   </section>
+  </aside>
+ </div>
+ <div class="foot">Lambda web function · Lambda durable function · Bedrock AgentCore · Lambda sandbox · DynamoDB · S3 · SNS / SQS — all running on LocalStack</div>
+</div>
+<div id="err" role="alert" hidden></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ENTS=['US','DE','UK'], PAST=['AWAITING_APPROVAL','POSTING','ERP_RETRY','CLOSED','ROLLED_BACK','REJECTED'], FINAL=['CLOSED','ROLLED_BACK','REJECTED'];
+const money=(c,cur)=>{try{return new Intl.NumberFormat('en-US',{style:'currency',currency:cur||'USD',maximumFractionDigits:0}).format((c||0)/100)}catch(e){return '$'+Math.round((c||0)/100)}};
+// in-place setters: never touch the DOM unless the value changed, so CSS animations do not restart
+const setT=(el,t)=>{if(el.textContent!==t)el.textContent=t};
+const setC=(el,c)=>{if(el.className!==c)el.className=c};
+const setH=(el,h)=>{if(el.hidden!==h)el.hidden=h};
+let snap=null, busy=false, errTimer=0;
+
+// ---- theme
+const setTheme=t=>{document.documentElement.dataset.theme=t;setT($('#theme'),t==='dark'?'☀️':'🌙');try{localStorage.theme=t}catch(e){}};
+$('#theme').addEventListener('click',()=>setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
+setTheme(document.documentElement.dataset.theme);
+
+// ---- talking to the web function
+function showErr(m){const e=$('#err');e.textContent=m;e.hidden=false;clearTimeout(errTimer);errTimer=setTimeout(()=>{e.hidden=true},4000)}
+async function post(path,body){
+ try{const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
+  if(!r.ok)throw new Error('HTTP '+r.status);return await r.json().catch(()=>({}))}
+ catch(e){showErr('Request failed: '+e.message);return null}
+}
+async function guarded(fn){if(busy)return;busy=true;render();try{await fn()}finally{busy=false;render()}}
+const curRun=()=>snap&&snap.runs&&snap.runs[0]||null;
+$('#start').addEventListener('click',()=>guarded(()=>post('/api/close',{})));
+$('#deliver').addEventListener('click',()=>guarded(()=>{const e=(snap.heldFeeds||[])[0];return e&&post('/api/feeds/'+encodeURIComponent(e)+'/deliver')}));
+const decide=ok=>guarded(()=>{const r=curRun();return r&&post('/api/closes/'+encodeURIComponent(r.closeId)+'/decision',{approved:ok,approver:'Dana Whitfield, Controller'})});
+$('#approve').addEventListener('click',()=>decide(true));
+$('#reject').addEventListener('click',()=>decide(false));
+async function chaos(body){const c=await post('/api/chaos',body);if(c&&snap){snap.chaos=c;render()}}
+$('#kill').addEventListener('click',()=>chaos({killSandbox:(snap&&snap.chaos&&snap.chaos.killSandbox>0)?0:1}));
+$('#erp').addEventListener('click',()=>chaos({erpDown:!(snap&&snap.chaos&&snap.chaos.erpDown)}));
+
+// ---- what the stages, entities and sentence say
+function stageStates(run){
+ if(!run)return[['idle','idle'],['idle','idle'],['idle','idle'],['idle','idle']];
+ const st=run.status, en=run.entities||{}, es=ENTS.map(k=>(en[k]||{}).status||'PENDING'), past=PAST.includes(st);
+ const waiting=es.includes('WAITING_FEED'), pending=es.includes('PENDING');
+ const c=past||(!waiting&&!pending)?['done','✓ done']:waiting?['active','waiting for bank feed']:['active','collecting...'];
+ const r=past||es.every(s=>s==='DRAFTED')?['done','✓ done']:es.includes('RECONCILING')?['active','working...']:['idle','not yet'];
+ const a=st==='AWAITING_APPROVAL'?['active','needs sign-off']:st==='REJECTED'?['bad','✗ rejected']
+  :['POSTING','ERP_RETRY','CLOSED','ROLLED_BACK'].includes(st)?['done','✓ done']:['idle','not yet'];
+ const p=st==='POSTING'?['active','posting...']:st==='ERP_RETRY'?['warn','ERP down, retrying']:st==='CLOSED'?['done','✓ done']
+  :st==='ROLLED_BACK'?['bad','✗ rolled back']:['idle','not yet'];
+ return[c,r,a,p];
+}
+function sentence(run){
+ if(!run)return'Press start to close the books for October.';
+ const en=run.entities||{}, st=run.status, js=run.journals||[], blk=js.filter(j=>j.status==='BLOCKED').length;
+ const late=ENTS.filter(k=>(en[k]||{}).status==='WAITING_FEED');
+ if(st==='CLOSED')return'Books closed.';
+ if(st==='ROLLED_BACK')return'ERP stayed down. Everything posted was rolled back.';
+ if(st==='REJECTED')return'Rejected by the controller.';
+ if(st==='ERP_RETRY')return'ERP is down. Retrying with backoff...';
+ if(st==='POSTING')return'Posting the journals to the ERP.';
+ if(st==='AWAITING_APPROVAL')return blk?`Policy blocked ${blk} journal${blk>1?'s':''} the agent proposed. A controller must sign off.`:'A controller must sign off.';
+ if(late.length)return`${late.join(' and ')} bank feed is late. The workflow is paused and costs nothing while it waits.`;
+ if(ENTS.every(k=>(en[k]||{}).status==='DRAFTED'))return'Policy is checking what the agents proposed.';
+ if(st==='STARTED')return'Starting the close...';
+ return'Three AI agents are reconciling the entities in parallel.';
+}
+
+// Which parts of the architecture are working right now, and what they are doing, in plain words.
+function arch(run,ch){
+ const en=run?run.entities||{}:{}, st=run?run.status:'';
+ const late=ENTS.some(k=>(en[k]||{}).status==='WAITING_FEED');
+ const recon=ENTS.some(k=>['PENDING','RECONCILING'].includes((en[k]||{}).status));
+ const R=(n,e,t,c)=>({n,e,t,c});
+ if(!run)return R(['b','w'],['bw'],'Ready','This page is served by a Lambda web function. It streams every change to your browser over Server-Sent Events.');
+ if(st==='CLOSED')return R(['d','s3','n'],['d3','dn'],'Closed','The close package is written to S3. SNS fans a notification out through SQS to a notifier Lambda.');
+ if(st==='ROLLED_BACK')return R(['d','ddb'],['dd'],'Saga','Compensating steps reversed every journal that was already posted. Nothing is left half done.');
+ if(st==='REJECTED')return R(['d'],[],'Rejected','The controller said no, which resumed the paused execution. Nothing is posted.');
+ if(st==='ERP_RETRY')return R(['d','ddb'],['dd'],'Post','The ERP call failed. The durable function retries with backoff. If it keeps failing, a saga reverses what was posted.');
+ if(st==='POSTING')return R(['d','ddb'],['dd'],'Post','Each journal is posted to the ERP as its own checkpointed step, with retries.');
+ if(st==='AWAITING_APPROVAL')return R(['b','w','d'],['bw','wd'],'Approve','The durable function waits on a callback and uses no compute while the controller decides. Your click resumes it.');
+ if(late)return R(['d','s3'],['d3'],'Collect','The durable function is suspended on a wait step. It costs nothing until the bank feed lands in S3.');
+ if(recon)return R(['d','a','s','ddb','s3'],['da','ds','dd','d3'],'Reconcile',(ch&&ch.killSandbox>0?'Sandbox kill is on: the first run crashes and is retried on a fresh sandbox. ':'')+'One branch per entity. Each asks its agent (AgentCore Runtime) what to do next, and the agent\'s code runs in an isolated sandbox Lambda. Every finished step is checkpointed.');
+ if(ENTS.every(k=>(en[k]||{}).status==='DRAFTED'))return R(['d'],[],'Approve','Plain code, not the model, checks each journal against policy. The stricter of agent and policy wins.');
+ return R(['b','w','d'],['bw','wd'],'Collect','The web function started a durable execution of close-workflow. Every step it takes is checkpointed.');
+}
+let archKey='';
+function renderArch(run,ch){
+ const r=arch(run,ch), key=r.n.join()+'|'+r.e.join()+'|'+r.t+'|'+r.c;
+ if(key===archKey)return;archKey=key;
+ ['b','w','d','a','s','s3','ddb','n'].forEach(i=>{const el=$('#n-'+i);if(el)el.setAttribute('class','n'+(r.n.includes(i)?' on':''))});
+ ['bw','wd','da','ds','d3','dd','dn'].forEach(i=>{const el=$('#e-'+i);if(el)el.setAttribute('class','e'+(r.e.includes(i)?' on':''))});
+ $('#archCap').innerHTML='<b>'+esc(r.t)+':</b> '+esc(r.c);
+}
+const STEP_TEXT={'agent is thinking':'🧠 agent is thinking (AgentCore)','loading feeds from S3':'📥 loading feeds from S3','running code in the sandbox':'🧪 running its code in the sandbox','drafting journals':'📝 drafting journals','feeds loaded':'📥 feeds loaded'};
+const stepText=t=>STEP_TEXT[t]||(String(t||'').startsWith('agent chose')?'🧠 '+t+' (AgentCore)':'');
+const ENT_TEXT={PENDING:['Queued',''],WAITING_FEED:['Waiting for bank feed','wait'],RECONCILING:['Reconciling...','work'],DRAFTED:['Ready','ready']};
+
+function render(){
+ const run=curRun(), st=run?run.status:'', en=run?run.entities||{}:{}, an=run?run.analysis||{}:{}, js=run?run.journals||[]:[];
+ const active=!!run&&!FINAL.includes(st), blocked=js.filter(j=>j.status==='BLOCKED');
+ // stages
+ stageStates(run).forEach(([cls,txt],i)=>{const el=$('#s'+i);setC(el,'stage '+cls);setT(el.querySelector('.st'),txt)});
+ // entity cards
+ ENTS.forEach(k=>{
+  const e=en[k]||{}, a=an[k], s=run?(e.status||'PENDING'):'', t=ENT_TEXT[s]||['Idle',''], el=$('#e-'+k);
+  setC(el,'ent '+t[1]);
+  setT(el.querySelector('.es'),run?(s==='WAITING_FEED'?'Bank feed is late. Paused, uses no compute.':(s==='RECONCILING'&&stepText(e.step))||t[0]):'Idle');
+  const mr=a?a.matchRate:(s==='DRAFTED'?e.matchRate:null);
+  setT(el.querySelector('.pct'),mr!=null?(Math.round(mr*1000)/10)+'%':'');
+  setT(el.querySelector('.ex'),a?`matched · ${(a.items?a.items.length:e.unmatched)||0} exceptions`:'');
+  const nb=blocked.filter(j=>j.entity===k).length, pl=el.querySelector('.pl');
+  setH(pl,!nb);setT(pl,nb?`⚖️ ${nb} journal${nb>1?'s':''} blocked by policy`:'');
+ });
+ setT($('#now'),sentence(run));
+ renderArch(run,(snap&&snap.chaos)||{});
+ // actions
+ const start=$('#start');setT(start,run?'▶ Start another close':'▶ Start October close');setH(start,active);start.disabled=busy;
+ const held=(snap&&snap.heldFeeds)||[], dv=$('#deliver');
+ setH(dv,!(active&&held.length));setT(dv,held.length?`📥 Deliver ${held[0]} bank feed`:'');dv.disabled=busy;
+ const ap=st==='AWAITING_APPROVAL';setH($('#appr'),!ap);
+ if(ap){
+  setT($('#nProp'),String(js.length));setT($('#nBlk'),String(blocked.length));setT($('#nTot'),money(run.totalUsdCents,'USD'));
+  const b=blocked[0];
+  setT($('#polline'),b?`⚖️ Policy blocked "${b.description}": ${b.reason||'restricted account'}`:((run.approval&&run.approval.reason)||'Needs a controller to sign off.'));
+  $('#approve').disabled=busy;$('#reject').disabled=busy;
+ }
+ const bn=$('#banner'), fin={CLOSED:['ok','✓ Books closed'],ROLLED_BACK:['warn','ERP failed: journals rolled back'],REJECTED:['bad','Rejected by controller']}[st];
+ setH(bn,!fin);if(fin){setC(bn,'banner '+fin[0]);setT(bn,fin[1])}
+ // chaos
+ const ch=(snap&&snap.chaos)||{};
+ $('#kill').setAttribute('aria-pressed',String((ch.killSandbox||0)>0));$('#erp').setAttribute('aria-pressed',String(!!ch.erpDown));
+ setT($('#brain'),snap&&snap.agentMode?'🧠 '+snap.agentMode:'');
+}
+
+// ---- terminal: Lambda logs (CloudWatch) streamed over Server-Sent Events
+const LOGMAX=300, SEENMAX=3000, seen=new Set(), seenQ=[];
+const hhmmss=ts=>{const d=new Date(ts);return isNaN(d)?'--:--:--':d.toTimeString().slice(0,8)};
+function tclass(l){
+ const t=String(l.text||''), tl=t.toLowerCase();
+ if(tl.includes('policy overrides agent')||tl.includes(' guardrail'))return'guard';
+ if(String(l.level||'').toUpperCase()==='ERROR'||/failed|died|timeout|rolled back|reversed/.test(tl))return'bad';
+ if(tl.startsWith('audit:'))return'mute';
+ if(/^\S+ -> [A-Z_]+/.test(t))return'stat';
+ return'';
+}
+function lineHtml(l){
+ const c=tclass(l), fn=['workflow','sandbox','notifier'].includes(l.fn)?l.fn:'';
+ return `<div class="l${c?' '+c:''}"><span class="tm">${hhmmss(l.ts)}</span><span class="fn ${fn}">${esc(l.fn)}</span><span class="tx">${esc(l.text)}</span></div>`;
+}
+function addLogs(batch){
+ const fresh=[];
+ for(const l of batch){
+  if(!l||typeof l.text!=='string')continue;
+  const k=l.ts+'|'+l.fn+'|'+l.text;               // a reconnect may resend recent lines
+  if(seen.has(k))continue;
+  seen.add(k);seenQ.push(k);if(seenQ.length>SEENMAX)seen.delete(seenQ.shift());
+  fresh.push(l);
+ }
+ if(!fresh.length)return;
+ const log=$('#log'), ph=$('#ph');if(ph)ph.remove();
+ const stick=log.scrollHeight-log.scrollTop-log.clientHeight<40;   // keep following unless the viewer scrolled up
+ log.insertAdjacentHTML('beforeend',fresh.map(lineHtml).join(''));
+ while(log.childElementCount>LOGMAX)log.removeChild(log.firstChild);
+ if(stick)log.scrollTop=log.scrollHeight;
+}
+function setTerm(open,persist){
+ $('#term').classList.toggle('closed',!open);setT($('#termBtn'),open?'Hide':'Show logs');$('#termBtn').setAttribute('aria-expanded',String(open));
+ if(persist){try{localStorage.term=open?'open':'closed'}catch(e){}}
+}
+$('#termBtn').addEventListener('click',()=>setTerm($('#term').classList.contains('closed'),true));
+{let t;try{t=localStorage.term}catch(e){}
+ setTerm(t==='open'?true:t==='closed'?false:matchMedia('(min-width:1101px)').matches,false)}   // open by default on wide screens only
+
+// ---- live updates (Server-Sent Events; EventSource reconnects on its own)
+const setLive=on=>{setC($('#live'),on?'live':'');setT($('#livet'),on?'live':'reconnecting')};
+// One tab per browser holds the stream and shares it with the other tabs (browsers allow only 6 connections
+// per host, so several open tabs would otherwise starve button clicks). Leader = the tab holding a Web Lock.
+const bc=('BroadcastChannel' in window)?new BroadcastChannel('close-copilot'):null;
+let es=null,lastSnap=null;
+const onSnap=d=>{snap=d;setLive(true);render();if(document.body.classList.contains('boot'))requestAnimationFrame(()=>requestAnimationFrame(()=>document.body.classList.remove('boot')))};
+function connect(){
+ es=new EventSource('/api/stream');
+ es.addEventListener('snapshot',e=>{let d;try{d=JSON.parse(e.data)}catch(x){return}lastSnap=d;onSnap(d);if(bc)bc.postMessage({t:'snap',d})});
+ es.addEventListener('logs',e=>{let b;try{b=JSON.parse(e.data)}catch(x){return}if(Array.isArray(b)){addLogs(b);if(bc)bc.postMessage({t:'logs',d:b})}});
+ es.onerror=()=>{setLive(false);if(bc)bc.postMessage({t:'down'})};
+}
+if(bc){
+ bc.onmessage=m=>{const x=m.data||{};
+  if(x.t==='snap'&&!es)onSnap(x.d);
+  else if(x.t==='logs'&&!es)addLogs(x.d);
+  else if(x.t==='down'&&!es)setLive(false);
+  else if(x.t==='hello'&&es&&lastSnap)bc.postMessage({t:'snap',d:lastSnap})};
+ bc.postMessage({t:'hello'});
+}
+if(navigator.locks&&bc){
+ navigator.locks.request('close-copilot-stream',()=>new Promise(()=>{connect()}));   // never resolves: held until this tab closes
+}else connect();
+setTimeout(()=>{render();document.body.classList.remove('boot')},4000);   // never stay blank if the stream is slow
+</script></body></html>
